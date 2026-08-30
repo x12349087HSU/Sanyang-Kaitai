@@ -70,6 +70,10 @@ py -m venv .venv
 `etf_screener/app_streamlit.py`；要開啟密碼保護，在 Secrets 填入
 `APP_PASSWORD = "你的密碼"`。
 
+**加入 iPhone 主畫面（像 App 一樣使用）**：部署到雲端後，用 Safari 開啟網址，
+點分享圖示 → 加入主畫面，桌面就會出現圖示，點下去會全螢幕開啟（沒有網址列）。
+不需要 Apple 開發者帳號、不用上架審核，圖示目前是預設的 📈（尚未做自訂圖示）。
+
 ## 資料來源
 
 - **股價**：[FinMind](https://finmind.github.io/) 公開 API（免登入）為主，失敗時改用

@@ -34,6 +34,22 @@ _UNIVERSES = {
 
 st.set_page_config(page_title="均線篩選器", page_icon="📈")
 
+# 讓 iPhone Safari「分享 → 加入主畫面」後，開啟時是全螢幕獨立模式（沒有網址列，
+# 更像原生 App），並在主畫面圖示下方顯示簡短的名稱，而不是完整網址。跟原本
+# 「公司基本面分析」專案的 apple-touch-icon 做法一樣，用 st.markdown 把 <meta>
+# 標籤插進主頁面 DOM（不是圖示，不需要另外準備圖檔）。已知限制：這是頁面 JS
+# 執行後才生效，不是伺服器最原始送出的 HTML 就有，如果 iOS 讀取時機更早，
+# 效果可能不會每次都套用，這是 Streamlit 平台本身的限制。
+st.markdown(
+    """
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="均線篩選器">
+    <meta name="theme-color" content="#7a1414">
+    """,
+    unsafe_allow_html=True,
+)
+
 
 def _get_configured_password() -> str | None:
     try:
