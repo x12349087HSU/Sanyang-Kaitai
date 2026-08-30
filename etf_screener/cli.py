@@ -8,6 +8,7 @@ import argparse
 
 from . import config
 from .ma_screener import TIER_LABELS, TIER_ORDER, screen_0050, screen_top150
+from .pdf_report import render_screen_pdf
 from .screen_page import render_screen_html
 
 _UNIVERSES = {
@@ -29,12 +30,16 @@ def main() -> int:
     universe_label, screen_fn = _UNIVERSES[args.universe]
     print(f"正在對「{universe_label}」跑均線篩選（逐檔查詢股價，需要一點時間）...")
     result = screen_fn()
-    html = render_screen_html(result, universe_label=universe_label)
 
-    out_path = config.REPORTS_DIR / f"{universe_label}均線篩選_{result.generated_at.isoformat()}.html"
-    out_path.write_text(html, encoding="utf-8")
+    stem = f"{universe_label}均線篩選_{result.generated_at.isoformat()}"
+    html_path = config.REPORTS_DIR / f"{stem}.html"
+    html_path.write_text(render_screen_html(result, universe_label=universe_label), encoding="utf-8")
 
-    print(f"網頁報告已產出：{out_path}")
+    pdf_path = config.REPORTS_DIR / f"{stem}.pdf"
+    pdf_path.write_bytes(render_screen_pdf(result, universe_label=universe_label))
+
+    print(f"網頁報告已產出：{html_path}")
+    print(f"PDF 報告已產出：{pdf_path}")
     for tier in TIER_ORDER:
         count = len(result.rows_by_tier(tier))
         print(f"  {TIER_LABELS[tier]}：{count} 檔")

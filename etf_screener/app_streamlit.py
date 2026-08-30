@@ -8,6 +8,8 @@ APP_PASSWORD（環境變數或 .streamlit/secrets.toml 皆可），則不會要�
 """
 from __future__ import annotations
 
+import base64
+import json
 import os
 import sys
 from pathlib import Path
@@ -22,6 +24,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from etf_screener.ma_screener import TIER_LABELS, TIER_ORDER, screen_0050, screen_top150
+from etf_screener.pdf_report import render_screen_pdf
 from etf_screener.screen_page import render_screen_html
 
 _UNIVERSES = {
@@ -96,19 +99,109 @@ if screen_result is not None:
     for col, tier in zip(tier_cols_bear, TIER_ORDER[4:]):
         col.metric(TIER_LABELS[tier], f"{len(screen_result.rows_by_tier(tier))} 檔")
 
+    stem = f"{result_universe_label}均線篩選_{screen_result.generated_at.isoformat()}"
+
+    st.subheader("PDF 報告")
+    with st.spinner("正在產生 PDF..."):
+        pdf_bytes = render_screen_pdf(screen_result, universe_label=result_universe_label)
+    pdf_filename = f"{stem}.pdf"
+    pdf_base64 = base64.b64encode(pdf_bytes).decode("ascii")
+
+    # 跟公司基本面分析專案同一套已驗證過的做法：用 Blob URL 而不是 data: URI 做
+    # 「開新分頁瀏覽」，因為 data: URI 拿去做頁面導覽會被瀏覽器的防釣魚機制擋下
+    # （結果是開新分頁後空白）；<a download> 在 iPhone Safari 上也常常不會真的
+    # 觸發下載，而是改用系統層級的 Quick Look 把畫面整個蓋掉，關閉後有時甚至
+    # 回不去原本頁面。Blob URL + window.open() 兩邊都不會有這些問題。
+    components.html(
+        f"""
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          display:flex; gap:0.5em; flex-wrap:wrap;">
+          <button id="openBtn" style="flex:1; min-width:140px; padding:0.5em 1em; font-size:1em;
+            border-radius:8px; border:none; background:#ff4b4b; color:#fff;
+            cursor:pointer;">📄 用瀏覽器開啟 PDF</button>
+          <button id="shareBtn" style="flex:1; min-width:140px; padding:0.5em 1em; font-size:1em;
+            border-radius:8px; border:1px solid rgba(49,51,63,0.2); background:#fff;
+            cursor:pointer;">📤 選擇開啟方式（分享）</button>
+        </div>
+        <div id="actionMsg" style="margin-top:0.4em; font-size:0.85em; color:#666;"></div>
+        <script>
+        const b64Data = {json.dumps(pdf_base64)};
+        const fileName = {json.dumps(pdf_filename)};
+
+        function b64ToBlob(b64, contentType) {{
+          const byteChars = atob(b64);
+          const byteNumbers = new Array(byteChars.length);
+          for (let i = 0; i < byteChars.length; i++) {{
+            byteNumbers[i] = byteChars.charCodeAt(i);
+          }}
+          return new Blob([new Uint8Array(byteNumbers)], {{type: contentType}});
+        }}
+
+        const msg = document.getElementById('actionMsg');
+
+        document.getElementById('openBtn').addEventListener('click', () => {{
+          msg.innerText = '';
+          try {{
+            const blob = b64ToBlob(b64Data, 'application/pdf');
+            const blobUrl = URL.createObjectURL(blob);
+            const opened = window.open(blobUrl, '_blank');
+            if (!opened) {{
+              msg.innerText = '瀏覽器擋下了開啟視窗，請改用下方「下載 PDF」按鈕。';
+            }}
+          }} catch (err) {{
+            msg.innerText = '開啟失敗，請改用下方「下載 PDF」按鈕。';
+          }}
+        }});
+
+        document.getElementById('shareBtn').addEventListener('click', async () => {{
+          msg.innerText = '';
+          try {{
+            const blob = b64ToBlob(b64Data, 'application/pdf');
+            const file = new File([blob], fileName, {{type: 'application/pdf'}});
+            if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
+              await navigator.share({{files: [file], title: fileName}});
+            }} else {{
+              msg.innerText = '此瀏覽器不支援分享功能，請改用「用瀏覽器開啟」或「下載」。';
+            }}
+          }} catch (err) {{
+            if (err && err.name !== 'AbortError') {{
+              msg.innerText = '分享失敗，請改用「用瀏覽器開啟」或「下載」。';
+            }}
+          }}
+        }});
+        </script>
+        """,
+        height=90,
+    )
+
+    st.download_button(
+        "📥 下載 PDF 到裝置",
+        data=pdf_bytes,
+        file_name=pdf_filename,
+        mime="application/pdf",
+        use_container_width=True,
+    )
+    st.caption(
+        "建議先用「用瀏覽器開啟 PDF」查看：會在新分頁用瀏覽器內建的 PDF 檢視器開啟，"
+        "裡面本身就有下載／列印功能；也可以用「選擇開啟方式」叫出系統分享選單，"
+        "存到「檔案」App 或分享給其他 App（iPhone／PC 皆適用）。"
+    )
+
+    st.subheader("網頁預覽")
+    st.caption("下方為篩選結果的網頁版內嵌預覽（可直接在頁面內捲動查看）。")
     screen_html = render_screen_html(screen_result, universe_label=result_universe_label)
     components.html(screen_html, height=1400, scrolling=True)
 
     st.download_button(
         "📥 下載此篩選結果網頁（HTML）",
         data=screen_html.encode("utf-8"),
-        file_name=f"{result_universe_label}均線篩選_{screen_result.generated_at.isoformat()}.html",
+        file_name=f"{stem}.html",
         mime="text/html",
         use_container_width=True,
     )
 
     if screen_result.skipped:
-        st.caption(f"{len(screen_result.skipped)} 檔查詢失敗，未列入篩選結果（詳見上方網頁內容或下載檔案）。")
+        st.caption(f"{len(screen_result.skipped)} 檔查詢失敗，未列入篩選結果（詳見上方內容或下載檔案）。")
 
 st.divider()
 st.caption("所有投資相關內容僅供參考，不構成任何投資建議，使用者應自行評估風險。")
