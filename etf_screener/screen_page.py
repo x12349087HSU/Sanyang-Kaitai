@@ -283,18 +283,24 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
     {html_lib.escape(config.DISCLAIMER_TEXT)}
   </footer>
   <script>
-    // 每個欄位維護一組「目前勾選中的值」集合；某一列要顯示，必須每個欄位都
-    // 命中該欄位目前勾選的集合，才算通過（等同 Excel 自動篩選：欄位之間是
-    // AND，同一欄位內的多個勾選值之間是 OR）。要加新的可篩選欄位，只要 Python
-    // 端在 _COLUMNS 加一筆、_row_attrs() 補對應 data-* 屬性，這裡的邏輯完全
-    // 不用改（COLS 是從 Python 端序列化過來的，資料驅動）。
+    // 每個欄位維護一組「目前勾選中的值」集合，加上一個「目前搜尋框內容」
+    // 字串；一列要顯示，該欄位的值必須同時（1）在勾選集合裡、（2）符合該
+    // 欄位目前的搜尋字（沒有輸入搜尋字就不做這項限制），每個欄位都要通過
+    // 才算通過（等同 Excel 自動篩選：欄位之間是 AND，同一欄位內的多個勾選值
+    // 之間是 OR）。搜尋框原本只會縮小面板裡的核取方塊清單、沒有連動套用到
+    // 表格本身，是先前回報「搜尋生效但表格沒反應」的原因；這裡把 searchQuery
+    // 一起納入判斷，並在輸入時呼叫 applyFilters() 修正。要加新的可篩選欄位，
+    // 只要 Python 端在 _COLUMNS 加一筆、_row_attrs() 補對應 data-* 屬性，這裡的
+    // 邏輯完全不用改（COLS 是從 Python 端序列化過來的，資料驅動）。
     var COLS = {json.dumps(col_keys)};
     var selected = {{}};
+    var searchQuery = {{}};
     COLS.forEach(function (col) {{
       var values = [];
       document.querySelectorAll('.filter-panel[data-col="' + col + '"] .filter-options input[type=checkbox]')
         .forEach(function (cb) {{ values.push(cb.value); }});
       selected[col] = new Set(values);
+      searchQuery[col] = '';
     }});
 
     function applyFilters() {{
@@ -302,7 +308,11 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
       var visibleCount = 0;
       rows.forEach(function (row) {{
         var match = COLS.every(function (col) {{
-          return selected[col].has(row.getAttribute('data-' + col));
+          var value = row.getAttribute('data-' + col);
+          if (!selected[col].has(value)) return false;
+          var q = searchQuery[col];
+          if (q && value.toLowerCase().indexOf(q) === -1) return false;
+          return true;
         }});
         row.hidden = !match;
         if (match) visibleCount++;
@@ -396,6 +406,10 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
           var label = cb.closest('label');
           label.hidden = q !== '' && cb.value.toLowerCase().indexOf(q) === -1;
         }});
+        // 搜尋框本身就是一個即時篩選條件，不是只縮小面板裡的核取方塊清單而已，
+        // 打字的當下表格就要跟著動——不用另外再勾/取消勾選才會生效。
+        searchQuery[col] = q;
+        applyFilters();
       }});
     }});
   </script>
