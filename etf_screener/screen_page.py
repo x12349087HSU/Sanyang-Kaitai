@@ -66,10 +66,18 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
     as_of = result.as_of_date
     as_of_text = as_of.isoformat() if as_of else "無可用資料"
     title = f"{universe_label}均線篩選"
+    default_tier = TIER_ORDER[0]
+
+    options = "\n".join(
+        f'<option value="{tier}"{" selected" if tier == default_tier else ""}>'
+        f"{TIER_LABELS[tier]}（{len(result.rows_by_tier(tier))} 檔）</option>"
+        for tier in TIER_ORDER
+    )
 
     sections = "".join(
         f"""
-        <section class="tier" style="--accent:{_TIER_ACCENT[tier]}">
+        <section class="tier" data-tier="{tier}"{"" if tier == default_tier else " hidden"}
+          style="--accent:{_TIER_ACCENT[tier]}">
           <h2><span class="badge">{TIER_LABELS[tier]}</span>（{len(result.rows_by_tier(tier))} 檔）</h2>
           <p class="desc">{TIER_DESCRIPTIONS[tier]}</p>
           {_rows_html(result.rows_by_tier(tier))}
@@ -91,7 +99,17 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
   }}
   h1 {{ font-size: 1.4rem; margin: 0 0 0.2rem; }}
-  .meta {{ color: #666; font-size: 0.85rem; margin-bottom: 1.4rem; }}
+  .meta {{ color: #666; font-size: 0.85rem; margin-bottom: 1rem; }}
+  .filter-bar {{
+    display: flex; align-items: center; gap: 0.6rem; margin-bottom: 1.2rem;
+    background: #fff; border-radius: 10px; padding: 0.8rem 1rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }}
+  .filter-bar label {{ font-size: 0.9rem; color: #444; font-weight: 600; }}
+  .filter-bar select {{
+    flex: 1; font-size: 0.95rem; padding: 0.4rem 0.6rem; border-radius: 6px;
+    border: 1px solid #ccc; background: #fff; color: #1a1a1a;
+  }}
   section.tier {{
     background: #fff; border-radius: 10px; padding: 1rem 1.2rem; margin-bottom: 1.2rem;
     border-left: 6px solid var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,0.06);
@@ -99,7 +117,11 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
   section.tier h2 {{ font-size: 1.1rem; margin: 0 0 0.3rem; }}
   .badge {{ color: var(--accent); font-weight: 700; }}
   .desc {{ color: #555; font-size: 0.85rem; margin: 0 0 0.8rem; }}
-  table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; display: block; overflow-x: auto; }}
+  table {{
+    width: 100%; border-collapse: collapse; font-size: 0.85rem; display: block;
+    overflow: auto; max-height: 55vh;
+  }}
+  thead {{ position: sticky; top: 0; }}
   th, td {{ text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #eee; white-space: nowrap; }}
   td.num, th:nth-child(n+3) {{ text-align: right; }}
   tbody tr:hover {{ background: #faf8f5; }}
@@ -116,6 +138,12 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
 <body>
   <h1>{html_lib.escape(title)}</h1>
   <p class="meta">篩選範圍：{html_lib.escape(universe_label)}（共 {len(result.rows) + len(result.skipped)} 檔）　資料日期：{as_of_text}　產生時間：{result.generated_at.isoformat()}　資料來源：FinMind（+ 證交所官方備援）</p>
+  <div class="filter-bar">
+    <label for="tierSelect">篩選分類</label>
+    <select id="tierSelect">
+      {options}
+    </select>
+  </div>
   {sections}
   {_skipped_html(result.skipped)}
   <footer>
@@ -127,5 +155,13 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
     5MA/10MA/20MA/60MA 皆為收盤價簡單移動平均（SMA），非官方統一標準。<br />
     {html_lib.escape(config.DISCLAIMER_TEXT)}
   </footer>
+  <script>
+    document.getElementById('tierSelect').addEventListener('change', function (ev) {{
+      var selected = ev.target.value;
+      document.querySelectorAll('section.tier').forEach(function (section) {{
+        section.hidden = section.getAttribute('data-tier') !== selected;
+      }});
+    }});
+  </script>
 </body>
 </html>"""

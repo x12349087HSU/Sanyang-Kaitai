@@ -23,7 +23,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 import streamlit as st
 import streamlit.components.v1 as components
 
-from etf_screener.ma_screener import TIER_LABELS, TIER_ORDER, screen_0050, screen_top150
+from etf_screener.ma_screener import screen_0050, screen_top150
 from etf_screener.pdf_report import render_screen_pdf
 from etf_screener.screen_page import render_screen_html
 
@@ -107,13 +107,6 @@ if screen_result is not None:
     result_universe_label = st.session_state["etf_screen_universe_label"]
     as_of = screen_result.as_of_date
     st.success(f"「{result_universe_label}」篩選完成，資料日期：{as_of.isoformat() if as_of else '無可用資料'}")
-
-    tier_cols_bull = st.columns(4)
-    for col, tier in zip(tier_cols_bull, TIER_ORDER[:4]):
-        col.metric(TIER_LABELS[tier], f"{len(screen_result.rows_by_tier(tier))} 檔")
-    tier_cols_bear = st.columns(4)
-    for col, tier in zip(tier_cols_bear, TIER_ORDER[4:]):
-        col.metric(TIER_LABELS[tier], f"{len(screen_result.rows_by_tier(tier))} 檔")
 
     stem = f"{result_universe_label}均線篩選_{screen_result.generated_at.isoformat()}"
 
@@ -204,9 +197,9 @@ if screen_result is not None:
     )
 
     st.subheader("網頁預覽")
-    st.caption("下方為篩選結果的網頁版內嵌預覽（可直接在頁面內捲動查看）。")
+    st.caption("下方為篩選結果的網頁版內嵌預覽，上方可以用「篩選分類」下拉選單切換要看哪一個等級。")
     screen_html = render_screen_html(screen_result, universe_label=result_universe_label)
-    components.html(screen_html, height=1400, scrolling=True)
+    components.html(screen_html, height=850, scrolling=True)
 
     st.download_button(
         "📥 下載此篩選結果網頁（HTML）",
