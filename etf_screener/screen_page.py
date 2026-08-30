@@ -27,8 +27,11 @@ def _fmt_price(value: float | None) -> str:
 def _rows_html(rows: list) -> str:
     if not rows:
         return '<p class="empty">本次篩選查無符合條件的個股。</p>'
+    # data-* 屬性給前端欄位篩選用（代號/收盤價/資料日期），之後要加更多可篩選
+    # 欄位，比照這裡加一個 data-* 屬性、在 applyFilters() 裡加一個條件即可。
     body_rows = "\n".join(
-        f"""<tr>
+        f"""<tr data-stock-id="{html_lib.escape(r.stock_id)}" data-close="{r.close}"
+              data-date="{r.trade_date.isoformat()}">
           <td>{html_lib.escape(r.stock_id)}</td>
           <td>{html_lib.escape(r.company_name)}</td>
           <td class="num">{_fmt_price(r.close)}</td>
@@ -44,7 +47,10 @@ def _rows_html(rows: list) -> str:
       <thead><tr>
         <th>代號</th><th>名稱</th><th>收盤價</th><th>5MA</th><th>10MA</th><th>20MA</th><th>60MA</th><th>資料日期</th>
       </tr></thead>
-      <tbody>{body_rows}</tbody>
+      <tbody>
+        {body_rows}
+        <tr class="no-match-row" hidden><td colspan="8">篩選條件無符合的個股</td></tr>
+      </tbody>
     </table>"""
 
 
@@ -110,6 +116,24 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
     flex: 1; font-size: 0.95rem; padding: 0.4rem 0.6rem; border-radius: 6px;
     border: 1px solid #ccc; background: #fff; color: #1a1a1a;
   }}
+  .column-filters {{
+    display: flex; flex-wrap: wrap; gap: 0.8rem 1.4rem; margin-bottom: 1.2rem;
+    background: #fff; border-radius: 10px; padding: 0.8rem 1rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }}
+  .column-filters .field {{ display: flex; flex-direction: column; gap: 0.25rem; }}
+  .column-filters label {{ font-size: 0.78rem; color: #666; }}
+  .column-filters input {{
+    font-size: 0.9rem; padding: 0.35rem 0.5rem; border-radius: 6px;
+    border: 1px solid #ccc; background: #fff; color: #1a1a1a; width: 9rem;
+  }}
+  .column-filters .range-inputs {{ display: flex; align-items: center; gap: 0.35rem; }}
+  .column-filters .range-inputs input {{ width: 6rem; }}
+  .column-filters button {{
+    align-self: flex-end; font-size: 0.82rem; padding: 0.4rem 0.8rem; border-radius: 6px;
+    border: 1px solid #ccc; background: #f5f5f5; color: #444; cursor: pointer;
+  }}
+  tr.no-match-row td {{ color: #888; text-align: center; white-space: normal; }}
   section.tier {{
     background: #fff; border-radius: 10px; padding: 1rem 1.2rem; margin-bottom: 1.2rem;
     border-left: 6px solid var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,0.06);
@@ -144,6 +168,25 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
       {options}
     </select>
   </div>
+  <div class="column-filters">
+    <div class="field">
+      <label for="filterStockId">代號</label>
+      <input type="text" id="filterStockId" placeholder="例如 2330" inputmode="numeric" />
+    </div>
+    <div class="field">
+      <label>收盤價</label>
+      <div class="range-inputs">
+        <input type="number" id="filterMinClose" placeholder="最低" step="0.01" />
+        <span>～</span>
+        <input type="number" id="filterMaxClose" placeholder="最高" step="0.01" />
+      </div>
+    </div>
+    <div class="field">
+      <label for="filterDate">資料日期</label>
+      <input type="date" id="filterDate" />
+    </div>
+    <button type="button" id="filterReset">清除欄位篩選</button>
+  </div>
   {sections}
   {_skipped_html(result.skipped)}
   <footer>
@@ -156,11 +199,64 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
     {html_lib.escape(config.DISCLAIMER_TEXT)}
   </footer>
   <script>
+    // 欄位篩選：套用在「目前顯示中的那個等級」的表格列上，跟均線分級（哪個
+    // section 顯示）是各自獨立的兩層篩選，可以疊加使用。之後要加更多可篩選
+    // 欄位（例如名稱、5MA 等），在 _rows_html() 補一個 data-* 屬性，這裡加一個
+    // 對應的 if 判斷即可，不需要更動篩選分類（tier）那一層的邏輯。
+    function visibleSection() {{
+      return document.querySelector('section.tier:not([hidden])');
+    }}
+
+    function applyColumnFilters() {{
+      var section = visibleSection();
+      if (!section) return;
+
+      var stockIdQuery = document.getElementById('filterStockId').value.trim().toLowerCase();
+      var minCloseRaw = document.getElementById('filterMinClose').value;
+      var maxCloseRaw = document.getElementById('filterMaxClose').value;
+      var minClose = minCloseRaw === '' ? null : parseFloat(minCloseRaw);
+      var maxClose = maxCloseRaw === '' ? null : parseFloat(maxCloseRaw);
+      var dateQuery = document.getElementById('filterDate').value;
+
+      var rows = section.querySelectorAll('tbody tr[data-stock-id]');
+      var visibleCount = 0;
+      rows.forEach(function (row) {{
+        var stockId = (row.getAttribute('data-stock-id') || '').toLowerCase();
+        var close = parseFloat(row.getAttribute('data-close'));
+        var date = row.getAttribute('data-date') || '';
+
+        var match = true;
+        if (stockIdQuery && stockId.indexOf(stockIdQuery) === -1) match = false;
+        if (match && minClose !== null && !(close >= minClose)) match = false;
+        if (match && maxClose !== null && !(close <= maxClose)) match = false;
+        if (match && dateQuery && date !== dateQuery) match = false;
+
+        row.hidden = !match;
+        if (match) visibleCount++;
+      }});
+
+      var noMatchRow = section.querySelector('.no-match-row');
+      if (noMatchRow) noMatchRow.hidden = visibleCount > 0;
+    }}
+
     document.getElementById('tierSelect').addEventListener('change', function (ev) {{
       var selected = ev.target.value;
       document.querySelectorAll('section.tier').forEach(function (section) {{
         section.hidden = section.getAttribute('data-tier') !== selected;
       }});
+      applyColumnFilters();
+    }});
+
+    ['filterStockId', 'filterMinClose', 'filterMaxClose', 'filterDate'].forEach(function (id) {{
+      document.getElementById(id).addEventListener('input', applyColumnFilters);
+    }});
+
+    document.getElementById('filterReset').addEventListener('click', function () {{
+      document.getElementById('filterStockId').value = '';
+      document.getElementById('filterMinClose').value = '';
+      document.getElementById('filterMaxClose').value = '';
+      document.getElementById('filterDate').value = '';
+      applyColumnFilters();
     }});
   </script>
 </body>
