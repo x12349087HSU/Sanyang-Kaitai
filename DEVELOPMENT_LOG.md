@@ -228,6 +228,34 @@ Streamlit 內嵌的 iframe 高度只有 850px，很容易貼近邊緣）超出�
 搜尋框篩出來、看得到**的選項上（不影響被搜尋隱藏起來的其他選項），這跟
 Excel 篩選清單本身的行為是一致的。
 
+## 5.5 「各分類代表意義」按鈕放大，以及篩選面板內搜尋框失效的 bug
+
+**圖例按鈕放大**：`<details class="legend"><summary>` 原本字級只有
+0.82rem、純文字沒有任何按鈕感，使用者反映不夠明顯。改成 1rem、粗體、
+白底圓角膠囊（pill）造型，加上陰影跟一個會隨展開/收合旋轉的 ▾ 箭頭
+（`details.legend[open] summary::after { transform: rotate(180deg); }`），
+明顯是個可以點的按鈕。
+
+**篩選面板內搜尋框失效（已修正的 bug）**：使用者回報「單一類別的關鍵字
+搜尋沒有生效」。根因是 CSS 特異度（specificity）衝突：
+`.filter-options label { display: block; ... }` 這條規則的特異度
+比瀏覽器內建的 `[hidden] { display: none; }` 規則還高，所以當 JS 把某個
+不符合搜尋字串的 `<label>` 設成 `hidden = true` 時，畫面上其實**沒有**
+真的消失——`display: block` 蓋掉了 `[hidden]` 該有的 `display: none`，
+使用者看到的就是「打了關鍵字，清單完全沒變化」。
+
+修法：另外加一條特異度更高的規則 `.filter-options label[hidden] {
+display: none; }`（比原本那條多了一個屬性選擇器 `[hidden]`，特異度
+`(0,2,1)` > `(0,1,1)`，會蓋回去），不需要拿掉原本 `display: block` 那條
+（那條是負責讓「有顯示」的 label 保持區塊排列跟省略號截斷效果）。
+
+**教訓**：任何元素只要同時（1）用 `hidden` 屬性/`.hidden` 屬性做顯示切換、
+又（2）在自己的 CSS 裡對同一個元素明寫了 `display: ...`，就要檢查一下
+特異度有沒有蓋掉 `[hidden]` 預設的 `display: none`——這個專案裡目前只有
+`.filter-options label` 踩到這個坑（用 grep `display:` 找過整份檔案，
+`tr`、`.filter-panel`、`section` 等其他靠 `hidden` 切換顯示的元素都沒有
+被自己的 CSS 蓋掉，不用比照修改）。
+
 ## 6. iPhone「加入主畫面」：只做了 PWA meta 標籤，沒有做自訂圖示
 
 使用者問過「怎麼做成 iPhone App」，說明過兩條路：

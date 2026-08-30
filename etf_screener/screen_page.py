@@ -171,8 +171,25 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
   }}
   h1 {{ font-size: 1.4rem; margin: 0 0 0.2rem; }}
   .meta {{ color: #666; font-size: 0.85rem; margin-bottom: 0.6rem; }}
-  details.legend {{ font-size: 0.82rem; color: #555; margin-bottom: 1rem; }}
-  details.legend ul {{ margin: 0.4rem 0 0; padding-left: 1.1rem; line-height: 1.7; }}
+  details.legend {{ margin-bottom: 1rem; }}
+  details.legend summary {{
+    cursor: pointer; list-style: none; user-select: none;
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    font-size: 1rem; font-weight: 700; color: #1a1a1a;
+    background: #fff; padding: 0.65rem 1.2rem; border-radius: 999px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+  }}
+  details.legend summary::-webkit-details-marker {{ display: none; }}
+  details.legend summary:hover {{ background: #f0eeea; }}
+  details.legend summary::after {{
+    content: '▾'; font-size: 0.85rem; color: #888; transition: transform 0.15s ease;
+  }}
+  details.legend[open] summary::after {{ transform: rotate(180deg); }}
+  details.legend ul {{
+    font-size: 0.85rem; color: #555; line-height: 1.9; margin: 0.6rem 0 0;
+    background: #fff; border-radius: 10px; padding: 0.9rem 1rem 0.9rem 2.2rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }}
   .tier-badge {{
     display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px;
     font-size: 0.78rem; font-weight: 700; color: #fff; background: var(--accent);
@@ -223,6 +240,10 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
     display: block; font-size: 0.82rem; padding: 0.15rem 0; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis;
   }}
+  /* 這條規則的優先權要蓋過上面那條 .filter-options label 的 display:block，
+     不然搜尋框把不符合的 label 設成 hidden 時，畫面上其實不會真的消失
+     （被上面那條規則的 display:block 蓋掉了），看起來就像搜尋沒有生效。 */
+  .filter-options label[hidden] {{ display: none; }}
   td {{ padding: 0.4rem 0.6rem; border-bottom: 1px solid #eee; white-space: nowrap; }}
   td.num {{ text-align: right; }}
   tbody tr:hover {{ background: #faf8f5; }}
