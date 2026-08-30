@@ -1,5 +1,5 @@
-"""0050 成分股均線篩選：判斷各成分股最近一日收盤價是否站上 5/10/20/60 日均線，
-依站上的均線數量分成四個等級。
+"""均線篩選：判斷股票最近一日收盤價站上或跌破幾條均線（5/10/20/60 日），
+依站上/跌破的均線數量分成八個等級（多頭四級、空頭四級）。
 
 分級是「巢狀」判定，不是各自獨立判斷：
 - 四海遊龍：收盤價同時站上 5MA、10MA、20MA、60MA 四條均線
@@ -7,10 +7,12 @@
   會被歸類到更高一級的「四海遊龍」，所以這裡看到的必定是跌破或無法判定 60MA 的情況）
 - 短線翻多訊號：站上 5MA、10MA（同理，不含也站上 20MA 的情況）
 - 準備短線翻多：只站上 5MA（不含也站上 10MA 的情況）
+- 空頭四級（四面楚歌／三聲無奈／短線翻空／注意停損）是上述的鏡像版本，條件改成
+  「跌破」對應數量的均線。
 
-每檔股票只會落在其中一級，或落在「0」（連 5MA 都沒站上，不列入四個等級）。
-單一成分股查價失敗只會被記錄到 skipped，不會讓整批篩選中止，跟其他 provider
-的容錯原則一致（見 providers/base.py）。
+每檔股票只會落在其中一級，或落在「0」（多空訊號不一致，例如站上 5MA 但跌破
+10MA，不列入八個等級）。單一股票查價失敗只會被記錄到 skipped，不會讓整批篩選
+中止，跟其他 provider 的容錯原則一致（見 providers/base.py）。
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from .etf0050_constituents import ETF_0050_CONSTITUENTS
+from .etf0051_constituents import ETF_0051_CONSTITUENTS
 from .models import StockIdentity
 from .moving_average import simple_moving_average
 from .providers.price import get_price_history
@@ -26,17 +29,30 @@ from .providers.price import get_price_history
 _MA_WINDOWS = (5, 10, 20, 60)
 _PRICE_FETCH_MONTHS = 6  # 約可涵蓋 100+ 交易日，60MA 計算所需的暖身資料足夠
 
+# 上市市值前 150 大 = 0050（市值前 50 大）+ 0051（市值第 51~150 名），兩者互補不重疊。
+TOP150_CONSTITUENTS: list[tuple[str, str]] = ETF_0050_CONSTITUENTS + ETF_0051_CONSTITUENTS
+
+TIER_ORDER: tuple[int, ...] = (4, 3, 2, 1, -1, -2, -3, -4)
+
 TIER_LABELS: dict[int, str] = {
     4: "四海遊龍",
     3: "三陽開泰",
     2: "短線翻多訊號",
     1: "準備短線翻多",
+    -1: "注意停損，切勿追高",
+    -2: "短線翻空，小心崩盤",
+    -3: "三聲無奈，請別凹單",
+    -4: "四面楚歌，岌岌可危",
 }
 TIER_DESCRIPTIONS: dict[int, str] = {
     4: "最近一日收盤價同時站上 5MA、10MA、20MA、60MA 四條均線",
     3: "最近一日收盤價站上 5MA、10MA、20MA 三條均線",
     2: "最近一日收盤價站上 5MA、10MA 兩條均線",
     1: "最近一日收盤價站上 5MA 一條均線",
+    -1: "最近一日收盤價跌破 5MA 一條均線",
+    -2: "最近一日收盤價跌破 5MA、10MA 兩條均線",
+    -3: "最近一日收盤價跌破 5MA、10MA、20MA 三條均線",
+    -4: "最近一日收盤價同時跌破 5MA、10MA、20MA、60MA 四條均線",
 }
 
 
@@ -50,7 +66,7 @@ class MaScreenRow:
     ma10: float | None
     ma20: float | None
     ma60: float | None
-    tier: int  # 4/3/2/1，或 0 表示未站上任何均線（不列入四個等級）
+    tier: int  # 4/3/2/1（多頭）、-1/-2/-3/-4（空頭），或 0 表示多空訊號不一致
 
 
 @dataclass
@@ -90,6 +106,19 @@ def _classify_tier(
         return 2
     if above_5:
         return 1
+
+    below_5 = ma5 is not None and close < ma5
+    below_10 = ma10 is not None and close < ma10
+    below_20 = ma20 is not None and close < ma20
+    below_60 = ma60 is not None and close < ma60
+    if below_5 and below_10 and below_20 and below_60:
+        return -4
+    if below_5 and below_10 and below_20:
+        return -3
+    if below_5 and below_10:
+        return -2
+    if below_5:
+        return -1
     return 0
 
 
@@ -97,7 +126,7 @@ def _screen_one(stock_id: str, company_name: str) -> MaScreenRow:
     identity = StockIdentity(
         stock_id=stock_id,
         company_name=company_name,
-        market_type="上市",  # 0050 成分股皆為市值前段的上市公司，非上櫃
+        market_type="上市",
     )
     result = get_price_history(identity, months=_PRICE_FETCH_MONTHS)
     if not result.ok or not result.data:
@@ -129,13 +158,13 @@ def _screen_one(stock_id: str, company_name: str) -> MaScreenRow:
     )
 
 
-def screen_0050(max_workers: int = 6) -> MaScreenResult:
-    """對 0050 全部成分股跑一次均線篩選。"""
+def screen_stocks(constituents: list[tuple[str, str]], max_workers: int = 6) -> MaScreenResult:
+    """對指定的股票清單跑一次均線篩選。"""
     result = MaScreenResult(generated_at=date.today())
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
             pool.submit(_screen_one, stock_id, name): (stock_id, name)
-            for stock_id, name in ETF_0050_CONSTITUENTS
+            for stock_id, name in constituents
         }
         for future in as_completed(futures):
             stock_id, name = futures[future]
@@ -144,3 +173,13 @@ def screen_0050(max_workers: int = 6) -> MaScreenResult:
             except Exception as exc:  # noqa: BLE001 - 單檔失敗不可中止整個篩選
                 result.skipped.append((stock_id, name, str(exc)))
     return result
+
+
+def screen_0050(max_workers: int = 6) -> MaScreenResult:
+    """對 0050（市值前 50 大）成分股跑一次均線篩選，檔數少、可快速完成。"""
+    return screen_stocks(ETF_0050_CONSTITUENTS, max_workers=max_workers)
+
+
+def screen_top150(max_workers: int = 6) -> MaScreenResult:
+    """對上市市值前 150 大（0050 + 0051 成分股）跑一次均線篩選。"""
+    return screen_stocks(TOP150_CONSTITUENTS, max_workers=max_workers)

@@ -4,15 +4,19 @@ from __future__ import annotations
 import html as html_lib
 
 from . import config
-from .ma_screener import TIER_DESCRIPTIONS, TIER_LABELS, MaScreenResult
+from .ma_screener import TIER_DESCRIPTIONS, TIER_LABELS, TIER_ORDER, MaScreenResult
 
-_TIER_ORDER = (4, 3, 2, 1)
-# 由深到淺的紅色，數值愈大（站上愈多條均線）顏色愈深
+# 多頭用紅色（台股慣例紅漲），空頭用綠色（台股慣例綠跌）；數值絕對值愈大
+# （站上/跌破愈多條均線，訊號愈強）顏色愈深。
 _TIER_ACCENT = {
     4: "#7a1414",
     3: "#b5321b",
     2: "#d6672c",
     1: "#e2a13a",
+    -1: "#8fae6e",
+    -2: "#6f9650",
+    -3: "#4f7a37",
+    -4: "#2f5a1f",
 }
 
 
@@ -58,9 +62,10 @@ def _skipped_html(skipped: list[tuple[str, str, str]]) -> str:
     </details>"""
 
 
-def render_screen_html(result: MaScreenResult) -> str:
+def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 成分股") -> str:
     as_of = result.as_of_date
     as_of_text = as_of.isoformat() if as_of else "無可用資料"
+    title = f"{universe_label}均線篩選"
 
     sections = "".join(
         f"""
@@ -69,7 +74,7 @@ def render_screen_html(result: MaScreenResult) -> str:
           <p class="desc">{TIER_DESCRIPTIONS[tier]}</p>
           {_rows_html(result.rows_by_tier(tier))}
         </section>"""
-        for tier in _TIER_ORDER
+        for tier in TIER_ORDER
     )
 
     return f"""<!doctype html>
@@ -77,7 +82,7 @@ def render_screen_html(result: MaScreenResult) -> str:
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>0050 成分股均線篩選</title>
+<title>{html_lib.escape(title)}</title>
 <style>
   :root {{ color-scheme: light; }}
   * {{ box-sizing: border-box; }}
@@ -109,13 +114,16 @@ def render_screen_html(result: MaScreenResult) -> str:
 </style>
 </head>
 <body>
-  <h1>0050 成分股均線篩選</h1>
-  <p class="meta">資料日期：{as_of_text}　產生時間：{result.generated_at.isoformat()}　資料來源：FinMind（+ 證交所官方備援）</p>
+  <h1>{html_lib.escape(title)}</h1>
+  <p class="meta">篩選範圍：{html_lib.escape(universe_label)}（共 {len(result.rows) + len(result.skipped)} 檔）　資料日期：{as_of_text}　產生時間：{result.generated_at.isoformat()}　資料來源：FinMind（+ 證交所官方備援）</p>
   {sections}
   {_skipped_html(result.skipped)}
   <footer>
-    均線分級為巢狀判定，例如「{TIER_LABELS[3]}」代表同時站上 5MA/10MA/20MA，
-    不代表站上或跌破 60MA——若也站上 60MA，會被歸類到更高一級的「{TIER_LABELS[4]}」。
+    均線分級為巢狀判定：多頭（紅）與空頭（綠）各四級，例如「{TIER_LABELS[3]}」代表
+    同時站上 5MA/10MA/20MA，不代表站上或跌破 60MA——若也站上 60MA，會被歸類到更高
+    一級的「{TIER_LABELS[4]}」；空頭四級（{TIER_LABELS[-1]}／{TIER_LABELS[-2]}／
+    {TIER_LABELS[-3]}／{TIER_LABELS[-4]}）是鏡像邏輯，條件改成「跌破」對應數量的均線。
+    多空訊號不一致（例如站上 5MA 但跌破 10MA）的股票不列入這八個等級。
     5MA/10MA/20MA/60MA 皆為收盤價簡單移動平均（SMA），非官方統一標準。<br />
     {html_lib.escape(config.DISCLAIMER_TEXT)}
   </footer>
