@@ -91,7 +91,10 @@ def _table_header_html(ordered_rows: list[tuple[int, object]]) -> str:
           </div>
           <div class="filter-panel" data-col="{col}" hidden>
             <input type="text" class="filter-search" placeholder="搜尋..." />
-            <label class="select-all"><input type="checkbox" checked> （全選）</label>
+            <div class="filter-actions">
+              <button type="button" class="select-all-btn">全選</button>
+              <button type="button" class="select-none-btn">全部不選</button>
+            </div>
             <div class="filter-options">{option_items}</div>
           </div>
         </th>""")
@@ -195,7 +198,11 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
   }}
   .filter-btn.active {{ color: #ffd479; }}
   .filter-panel {{
-    position: absolute; top: 100%; left: 0; z-index: 5; width: 14rem;
+    /* position: fixed（不是 absolute）+ JS 動態算 top/left，這樣面板永遠是相對
+       瀏覽器視窗定位，不會被 .table-wrap 的 overflow:auto 裁切——之前的版本用
+       absolute 定位在 <th> 底下，當篩選結果變少、.table-wrap 高度跟著縮小時，
+       面板就會被裁掉一部分，看起來像「視窗過小看不到選項」。 */
+    position: fixed; z-index: 50; width: 14rem;
     background: #fff; color: #1a1a1a; border: 1px solid #ccc; border-radius: 8px;
     box-shadow: 0 4px 12px rgba(0,0,0,0.18); padding: 0.5rem; font-weight: normal;
   }}
@@ -203,9 +210,13 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
     width: 100%; font-size: 0.85rem; padding: 0.3rem 0.5rem; margin-bottom: 0.4rem;
     border: 1px solid #ccc; border-radius: 5px;
   }}
-  .filter-panel .select-all {{
-    display: block; font-size: 0.82rem; font-weight: 600; padding-bottom: 0.3rem;
-    margin-bottom: 0.3rem; border-bottom: 1px solid #eee;
+  .filter-actions {{
+    display: flex; gap: 0.5rem; padding-bottom: 0.4rem; margin-bottom: 0.4rem;
+    border-bottom: 1px solid #eee;
+  }}
+  .filter-actions button {{
+    flex: 1; font-size: 0.78rem; padding: 0.25rem 0.4rem; border-radius: 5px;
+    border: 1px solid #ccc; background: #f5f5f5; color: #444; cursor: pointer;
   }}
   .filter-options {{ max-height: 12rem; overflow-y: auto; }}
   .filter-options label {{
@@ -290,6 +301,24 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
       }});
     }}
 
+    // 面板固定用 position:fixed，開啟時才用按鈕的實際位置（getBoundingClientRect）
+    // 動態算 top/left，並在空間不夠時自動往上/往左翻，確保不管表格目前縮多小、
+    // 或面板本身開在畫面邊緣，選項清單都不會被裁掉或跑出畫面。
+    function positionPanel(btn, panel) {{
+      var btnRect = btn.getBoundingClientRect();
+      var panelRect = panel.getBoundingClientRect();
+      var top = btnRect.bottom + 4;
+      if (top + panelRect.height > window.innerHeight) {{
+        top = Math.max(4, btnRect.top - panelRect.height - 4);
+      }}
+      var left = btnRect.left;
+      if (left + panelRect.width > window.innerWidth) {{
+        left = Math.max(4, window.innerWidth - panelRect.width - 4);
+      }}
+      panel.style.top = top + 'px';
+      panel.style.left = left + 'px';
+    }}
+
     document.querySelectorAll('.filter-btn').forEach(function (btn) {{
       btn.addEventListener('click', function (ev) {{
         ev.stopPropagation();
@@ -299,6 +328,7 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
         closeAllPanels(willOpen ? panel : null);
         panel.hidden = !willOpen;
         btn.classList.toggle('active', willOpen);
+        if (willOpen) positionPanel(btn, panel);
       }});
     }});
 
@@ -309,17 +339,23 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
 
     document.querySelectorAll('.filter-panel').forEach(function (panel) {{
       var col = panel.getAttribute('data-col');
-      var selectAllCb = panel.querySelector('.select-all input');
       var optionCbs = panel.querySelectorAll('.filter-options input[type=checkbox]');
 
-      selectAllCb.addEventListener('change', function () {{
+      // 「全選」「全部不選」只作用在目前（搜尋後）看得到的選項上，跟真正 Excel
+      // 篩選清單的行為一致：先搜尋縮小範圍，再一次全選/全不選那個子集合。
+      panel.querySelector('.select-all-btn').addEventListener('click', function () {{
         optionCbs.forEach(function (cb) {{
-          cb.checked = selectAllCb.checked;
-          var label = cb.closest('label');
-          if (!label.hidden) {{
-            if (selectAllCb.checked) selected[col].add(cb.value);
-            else selected[col].delete(cb.value);
-          }}
+          if (cb.closest('label').hidden) return;
+          cb.checked = true;
+          selected[col].add(cb.value);
+        }});
+        applyFilters();
+      }});
+      panel.querySelector('.select-none-btn').addEventListener('click', function () {{
+        optionCbs.forEach(function (cb) {{
+          if (cb.closest('label').hidden) return;
+          cb.checked = false;
+          selected[col].delete(cb.value);
         }});
         applyFilters();
       }});
@@ -328,7 +364,6 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
         cb.addEventListener('change', function () {{
           if (cb.checked) selected[col].add(cb.value);
           else selected[col].delete(cb.value);
-          selectAllCb.checked = Array.from(optionCbs).every(function (c) {{ return c.checked; }});
           applyFilters();
         }});
       }});
