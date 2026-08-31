@@ -22,12 +22,14 @@ from datetime import date
 
 from .etf0050_constituents import ETF_0050_CONSTITUENTS
 from .etf0051_constituents import ETF_0051_CONSTITUENTS
+from .kd import compute_kd
 from .models import StockIdentity
 from .moving_average import simple_moving_average
 from .providers.price import get_price_history
 
 _MA_WINDOWS = (5, 10, 20, 60)
 _PRICE_FETCH_MONTHS = 6  # 約可涵蓋 100+ 交易日，60MA 計算所需的暖身資料足夠
+_KD_WINDOW = 9  # 台股慣用的 KD 計算天數
 
 # 上市市值前 150 大 = 0050（市值前 50 大）+ 0051（市值第 51~150 名），兩者互補不重疊。
 TOP150_CONSTITUENTS: list[tuple[str, str]] = ETF_0050_CONSTITUENTS + ETF_0051_CONSTITUENTS
@@ -67,6 +69,21 @@ class MaScreenRow:
     ma20: float | None
     ma60: float | None
     tier: int  # 4/3/2/1（多頭）、-1/-2/-3/-4（空頭），或 0 表示多空訊號不一致
+    # 這段暖身期間（約 6 個月）的完整每日序列，跟上面 ma5~ma60 只留「最近一日」
+    # 的數字不同——保留下來是為了給技術分析圖表用（見 screen_page.py），四筆
+    # 陣列彼此等長、同一個 index 對應同一個交易日。
+    history_dates: list[date] = field(default_factory=list)
+    history_close: list[float] = field(default_factory=list)
+    # 開高低收（K 棒）需要的另外三個序列；close 沿用上面已經有的 history_close。
+    history_open: list[float] = field(default_factory=list)
+    history_high: list[float] = field(default_factory=list)
+    history_low: list[float] = field(default_factory=list)
+    history_ma5: list[float | None] = field(default_factory=list)
+    history_ma10: list[float | None] = field(default_factory=list)
+    history_ma20: list[float | None] = field(default_factory=list)
+    history_ma60: list[float | None] = field(default_factory=list)
+    history_k: list[float | None] = field(default_factory=list)
+    history_d: list[float | None] = field(default_factory=list)
 
 
 @dataclass
@@ -138,6 +155,9 @@ def _screen_one(stock_id: str, company_name: str) -> MaScreenRow:
         raise RuntimeError("股價資料筆數過少，無法計算均線")
 
     ma_series = {window: simple_moving_average(closes, window) for window in _MA_WINDOWS}
+    highs = [b.high for b in bars]
+    lows = [b.low for b in bars]
+    k_series, d_series = compute_kd(highs, lows, closes, window=_KD_WINDOW)
     last_bar = bars[-1]
     ma5 = ma_series[5][-1]
     ma10 = ma_series[10][-1]
@@ -155,6 +175,17 @@ def _screen_one(stock_id: str, company_name: str) -> MaScreenRow:
         ma20=ma20,
         ma60=ma60,
         tier=tier,
+        history_dates=[b.trade_date for b in bars],
+        history_close=closes,
+        history_open=[b.open for b in bars],
+        history_high=highs,
+        history_low=lows,
+        history_ma5=ma_series[5],
+        history_ma10=ma_series[10],
+        history_ma20=ma_series[20],
+        history_ma60=ma_series[60],
+        history_k=k_series,
+        history_d=d_series,
     )
 
 

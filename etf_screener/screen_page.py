@@ -112,7 +112,9 @@ def _table_body_html(ordered_rows: list[tuple[int, object]]) -> str:
           <td><span class="tier-badge" style="--accent:{_TIER_ACCENT[tier]}">{attrs['tier']}</span></td>
           <td>{html_lib.escape(attrs['stock-id'])}</td>
           <td>{html_lib.escape(attrs['name'])}</td>
-          <td class="num">{html_lib.escape(attrs['close'])}</td>
+          <td class="num"><button type="button" class="price-link"
+            data-stock-id="{html_lib.escape(r.stock_id)}"
+            data-name="{html_lib.escape(r.company_name)}">{html_lib.escape(attrs['close'])}</button></td>
           <td>{attrs['date']}</td>
         </tr>""")
     rows_html.append('<tr class="no-match-row" hidden><td colspan="5">篩選條件無符合的個股</td></tr>')
@@ -153,6 +155,32 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
         (tier, r) for tier in TIER_ORDER for r in result.rows_by_tier(tier)
     ]
     col_keys = [col for col, _ in _COLUMNS]
+
+    def _round_series(values: list[float | None]) -> list[float | None]:
+        return [None if v is None else round(v, 2) for v in values]
+
+    # 給「點收盤價看技術分析圖表」用的每日序列，只需要涵蓋目前有列在表格裡的
+    # 股票（tier=0、多空訊號不一致的已經被 ordered_rows 排除掉了）。用
+    # separators=(",", ":") 去掉多餘空白，這份資料量隨股票池變大（0050+0051
+    # 約 150 檔 × 每檔 6 個月序列）還是要盡量精簡，畢竟整份 HTML 是要內嵌進
+    # Streamlit 的 iframe、也是使用者會下載的獨立檔案。
+    price_history = {
+        r.stock_id: {
+            "dates": [d.isoformat() for d in r.history_dates],
+            "close": _round_series(r.history_close),
+            "open": _round_series(r.history_open),
+            "high": _round_series(r.history_high),
+            "low": _round_series(r.history_low),
+            "ma5": _round_series(r.history_ma5),
+            "ma10": _round_series(r.history_ma10),
+            "ma20": _round_series(r.history_ma20),
+            "ma60": _round_series(r.history_ma60),
+            "k": _round_series(r.history_k),
+            "d": _round_series(r.history_d),
+        }
+        for _tier, r in ordered_rows
+    }
+    price_history_json = json.dumps(price_history, separators=(",", ":"))
 
     return f"""<!doctype html>
 <html lang="zh-Hant">
@@ -252,6 +280,82 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
   tr.no-match-row td {{ color: #888; text-align: center; white-space: normal; }}
   details.skipped {{ font-size: 0.8rem; color: #777; margin-top: 1rem; }}
   footer {{ margin-top: 1.2rem; font-size: 0.78rem; color: #888; line-height: 1.7; text-align: center; }}
+  /* 收盤價點下去可以看技術分析圖表，用 <button> 而不是 <span> 是為了保留
+     鍵盤可操作性（跟篩選面板的按鈕一致），這裡把 button 預設外觀重置掉，
+     讓它看起來像表格裡的一個可點的連結文字。 */
+  .price-link {{
+    cursor: pointer; color: #1a54c4; text-decoration: underline dotted;
+    text-underline-offset: 2px; background: none; border: none; padding: 0;
+    font: inherit; font-size: inherit;
+  }}
+  .price-link:hover {{ color: #0d3a91; }}
+  .chart-view {{
+    background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    padding: 0.9rem;
+  }}
+  .chart-header {{
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.6rem;
+  }}
+  .chart-back-btn {{
+    cursor: pointer; border: none; border-radius: 8px; padding: 0.5rem 1rem;
+    font-size: 0.9rem; font-weight: 700; background: #7a1414; color: #fff;
+  }}
+  .chart-back-btn:hover {{ background: #9a1c1c; }}
+  .chart-title {{ font-weight: 700; font-size: 1.05rem; }}
+  .chart-reset-btn {{
+    cursor: pointer; border: 1px solid #ccc; border-radius: 999px; padding: 0.3rem 0.8rem;
+    font-size: 0.78rem; background: #fff; color: #555;
+  }}
+  .chart-reset-btn:hover {{ background: #f0eeea; }}
+  .chart-mode-btn {{
+    cursor: pointer; border: 1px solid #7a1414; border-radius: 999px; padding: 0.3rem 0.8rem;
+    font-size: 0.78rem; background: #fff; color: #7a1414;
+  }}
+  .chart-mode-btn:hover {{ background: #fbeaea; }}
+  /* KD 指標畫在價格圖下方一個較矮的子圖，兩者共用同一個 x 軸（日期），
+     用 flex 直向排列、價格圖分到的高度權重是 KD 圖的 3 倍，兩者加總維持
+     跟原本單一價格圖同樣的總高度（var(--table-max-h)），不會讓整個圖表區
+     突然變得比之前高出一大截。 */
+  .chart-canvas-wrap {{
+    display: flex; flex-direction: column; gap: 0.5rem;
+    width: 100%; height: var(--table-max-h, 60vh);
+  }}
+  .price-canvas {{ display: block; width: 100%; flex: 3 1 0; min-height: 0; touch-action: none; }}
+  .kd-canvas {{
+    display: block; width: 100%; flex: 1 1 0; min-height: 70px; touch-action: none;
+    border-top: 1px solid #eee;
+  }}
+  /* K、D 兩條線都關掉時，乾脆把 KD 子圖整塊藏起來、讓價格圖長高補滿，
+     不要留一塊空空的灰底畫布在那裡。 */
+  .chart-canvas-wrap.kd-hidden .kd-canvas {{ display: none; }}
+  .chart-canvas-wrap.kd-hidden .price-canvas {{ flex: 1 1 0; }}
+  .chart-info {{
+    margin-top: 0.5rem; font-size: 0.82rem; color: #555; text-align: center;
+    min-height: 1.2em;
+  }}
+  .chart-legend {{
+    display: flex; flex-wrap: wrap; gap: 0.7rem; font-size: 0.78rem; color: #555;
+    margin-top: 0.4rem; justify-content: center;
+  }}
+  /* 圖例本身改成可以點的按鈕，點一下切換該條線顯示/隱藏；用 opacity 降低
+     + 加刪除線表示「目前關閉」，不是單純拿掉顏色說明，避免看起來像是壞掉。 */
+  .legend-item {{
+    cursor: pointer; border: none; background: none; padding: 0.15rem 0.35rem;
+    border-radius: 999px; font: inherit; font-size: inherit; color: #555;
+  }}
+  .legend-item:hover {{ background: #f0eeea; }}
+  .legend-item.off {{ opacity: 0.4; text-decoration: line-through; }}
+  /* 「KD 全部」是一次關掉/開啟 K、D 兩條線的捷徑按鈕，跟個別的 K／D
+     開關是兩件事，用邊框跟粗體字區隔開，不要跟一般圖例長得一模一樣、
+     讓人誤以為它也是某一條「顏色是這樣」的線。 */
+  .legend-kd-toggle {{ border: 1px solid #ccc; font-weight: 700; }}
+  .legend-kd-toggle.off {{ border-color: #ddd; }}
+  .legend-note {{ color: #555; }}
+  .chart-legend .swatch {{
+    display: inline-block; width: 0.8rem; height: 0.2rem; margin-right: 0.3rem;
+    vertical-align: middle;
+  }}
   @media (max-width: 480px) {{
     /* 手機窄螢幕：body 保留一點點留白（0.4rem），讓「訊號意義」跟免責聲明
        這類純文字內容不會整個貼死螢幕邊緣、不好讀；但表格本身用負邊界
@@ -259,7 +363,7 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
        這樣真正吃到滿版的是使用者最主要在看的表格資料，而不是連文字說明
        都硬貼邊緣、反而不好讀。 */
     body {{ padding: 0.5rem 0.4rem; }}
-    .table-wrap {{
+    .table-wrap, .chart-view {{
       border-radius: 0; box-shadow: none;
       margin-left: -0.4rem; margin-right: -0.4rem;
       width: calc(100% + 0.8rem);
@@ -270,21 +374,53 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
 </style>
 </head>
 <body>
-  <div class="table-wrap">
-    <table id="dataTable">
-      <thead>
-        {_table_header_html(ordered_rows)}
-      </thead>
-      <tbody>
-        {_table_body_html(ordered_rows)}
-      </tbody>
-    </table>
+  <div id="tableView">
+    <div class="table-wrap">
+      <table id="dataTable">
+        <thead>
+          {_table_header_html(ordered_rows)}
+        </thead>
+        <tbody>
+          {_table_body_html(ordered_rows)}
+        </tbody>
+      </table>
+    </div>
+    {_skipped_html(result.skipped)}
+    {_legend_html()}
+    <footer>
+      {html_lib.escape(config.DISCLAIMER_TEXT)}
+    </footer>
   </div>
-  {_skipped_html(result.skipped)}
-  {_legend_html()}
-  <footer>
-    {html_lib.escape(config.DISCLAIMER_TEXT)}
-  </footer>
+  <div id="chartView" class="chart-view" hidden>
+    <div class="chart-header">
+      <button type="button" class="chart-back-btn">← 返回篩選結果</button>
+      <span class="chart-title" id="chartStockLabel"></span>
+      <button type="button" class="chart-mode-btn" id="chartModeBtn">查價模式：多點</button>
+      <button type="button" class="chart-reset-btn" id="chartJumpLatestBtn" hidden>回到最新</button>
+      <button type="button" class="chart-reset-btn" id="chartResetBtn" hidden>顯示全部區間</button>
+    </div>
+    <div class="chart-canvas-wrap">
+      <canvas id="priceChart" class="price-canvas"></canvas>
+      <canvas id="kdChart" class="kd-canvas"></canvas>
+    </div>
+    <div class="chart-info" id="chartInfo"></div>
+    <div class="chart-legend" id="chartLegend">
+      <span class="legend-note"><span class="swatch" style="background:#c0392b"></span>收盤（漲）
+        <span class="swatch" style="background:#1e8449"></span>收盤（跌）</span>
+      <button type="button" class="legend-item" data-series="ma5"><span class="swatch" style="background:#e2a13a"></span>5MA</button>
+      <button type="button" class="legend-item" data-series="ma10"><span class="swatch" style="background:#d6672c"></span>10MA</button>
+      <button type="button" class="legend-item" data-series="ma20"><span class="swatch" style="background:#b5321b"></span>20MA</button>
+      <button type="button" class="legend-item" data-series="ma60"><span class="swatch" style="background:#4f7a37"></span>60MA</button>
+      <button type="button" class="legend-item" data-series="k"><span class="swatch" style="background:#1a54c4"></span>K</button>
+      <button type="button" class="legend-item" data-series="d"><span class="swatch" style="background:#c4471a"></span>D</button>
+      <button type="button" class="legend-item legend-kd-toggle" id="kdGroupToggle">KD 全部</button>
+    </div>
+    <p style="font-size:0.75rem; color:#999; text-align:center; margin-top:0.6rem;">
+      K 棒紅漲綠跌；點下方圖例可以開關該條線／整組 KD；拖曳／滑動可查看
+      該日各數值；兩指縮放（手機）或滾輪（滑鼠）可以放大/縮小時間區間，
+      非投資建議。
+    </p>
+  </div>
   <script>
     // 每個欄位維護一組「目前勾選中的值」集合，加上一個「目前搜尋框內容」
     // 字串；一列要顯示，該欄位的值必須同時（1）在勾選集合裡、（2）符合該
@@ -296,6 +432,7 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
     // 只要 Python 端在 _COLUMNS 加一筆、_row_attrs() 補對應 data-* 屬性，這裡的
     // 邏輯完全不用改（COLS 是從 Python 端序列化過來的，資料驅動）。
     var COLS = {json.dumps(col_keys)};
+    var PRICE_HISTORY = {price_history_json};
     var selected = {{}};
     var searchQuery = {{}};
     COLS.forEach(function (col) {{
@@ -462,9 +599,549 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
       }} catch (e) {{}}
     }}
 
+    // 點收盤價看技術分析圖表：純前端切換 #tableView / #chartView 兩個區塊的
+    // hidden 屬性，不需要連回 Python/後端重新產生頁面，這份 HTML 不管是內嵌
+    // 在 Streamlit 裡還是使用者獨立下載開啟都能用（PRICE_HISTORY 已經整份
+    // 內嵌在這個檔案裡）。圖表用原生 canvas 手畫折線圖，沒有另外載入圖表庫。
+    var currentChartStockId = null;
+    var priceChart = document.getElementById('priceChart');
+    var kdChart = document.getElementById('kdChart');
+    var canvasWrap = document.querySelector('.chart-canvas-wrap');
+    var resetBtn = document.getElementById('chartResetBtn');
+    var jumpLatestBtn = document.getElementById('chartJumpLatestBtn');
+    var modeBtn = document.getElementById('chartModeBtn');
+    var kdGroupToggle = document.getElementById('kdGroupToggle');
+
+    // 收盤價改用 K 棒（蠟燭圖）表示，不再是可以個別開關的一條線，所以
+    // PRICE_SERIES 只剩四條均線；K 棒本身一律顯示，是價格圖的主體。
+    var PRICE_SERIES = [
+      {{ key: 'ma5', label: '5MA', color: '#e2a13a', width: 1.2 }},
+      {{ key: 'ma10', label: '10MA', color: '#d6672c', width: 1.2 }},
+      {{ key: 'ma20', label: '20MA', color: '#b5321b', width: 1.2 }},
+      {{ key: 'ma60', label: '60MA', color: '#4f7a37', width: 1.2 }},
+    ];
+    var KD_SERIES = [
+      {{ key: 'k', label: 'K', color: '#1a54c4', width: 1.4 }},
+      {{ key: 'd', label: 'D', color: '#c4471a', width: 1.4 }},
+    ];
+    // 哪些線目前顯示、查價模式是多點還是單點——都是使用者的操作偏好，不是
+    // 單一股票的資料，所以刻意放在 openChart() 外面，換股票看圖也不會
+    // 重置；縮放範圍 chartRange 則相反，換一檔股票就該重新看整段，所以
+    // 放在 openChart() 裡面重置。
+    var seriesVisible = {{ ma5: true, ma10: true, ma20: true, ma60: true, k: true, d: true }};
+    var chartRange = {{ start: 0, end: 0 }};
+    var crosshairMode = 'multi'; // 'multi'（原本的多點模式）或 'single'（單一十字線，只標收盤價）
+
+    // 價格圖跟 KD 子圖畫法幾乎一樣（格線＋刻度＋折線＋十字查價線），只有
+    // Y 軸範圍、要不要畫日期刻度不同，所以抽成同一個函式，兩個 canvas
+    // 各呼叫一次。opts.range 是目前縮放後的可視資料區間 {{start, end}}
+    // （索引，含頭尾），沒給就畫全部。回傳畫圖當下用的座標換算參數，給
+    // 滑鼠/觸控算最近的資料 index 用（兩個 canvas 寬度相同，這組參數兩邊
+    // 共用也不會錯）。
+    function drawPanel(canvas, dates, seriesList, hoverIdx, opts) {{
+      opts = opts || {{}};
+      var dpr = window.devicePixelRatio || 1;
+      var cssWidth = canvas.clientWidth;
+      var cssHeight = canvas.clientHeight;
+      if (cssWidth <= 0 || cssHeight <= 0) return null;
+      canvas.width = Math.round(cssWidth * dpr);
+      canvas.height = Math.round(cssHeight * dpr);
+      var ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+      var range = opts.range || {{ start: 0, end: dates.length - 1 }};
+      var start = range.start, end = range.end;
+      var count = end - start + 1;
+      if (count <= 0) return null;
+
+      var minV, maxV;
+      if (opts.fixedRange) {{
+        minV = opts.fixedRange[0];
+        maxV = opts.fixedRange[1];
+      }} else {{
+        var allValues = [];
+        seriesList.forEach(function (s) {{
+          for (var i = start; i <= end; i++) {{
+            var v = s.values[i];
+            if (v !== null && v !== undefined) allValues.push(v);
+          }}
+        }});
+        // K 棒的最高/最低價也要算進 Y 軸範圍，不然影線可能會超出畫布上下緣。
+        if (opts.ohlc) {{
+          for (var oi = start; oi <= end; oi++) {{
+            var oh = opts.ohlc.high[oi], ol = opts.ohlc.low[oi];
+            if (oh !== null && oh !== undefined) allValues.push(oh);
+            if (ol !== null && ol !== undefined) allValues.push(ol);
+          }}
+        }}
+        if (!allValues.length) return null;
+        minV = Math.min.apply(null, allValues);
+        maxV = Math.max.apply(null, allValues);
+        var pad = (maxV - minV) * 0.08 || Math.max(1, minV * 0.05);
+        minV -= pad;
+        maxV += pad;
+      }}
+
+      var padLeft = 46, padRight = 10;
+      var padTop = opts.padTop !== undefined ? opts.padTop : 10;
+      var padBottom = opts.padBottom !== undefined ? opts.padBottom : 22;
+      var plotW = Math.max(1, cssWidth - padLeft - padRight);
+      var plotH = Math.max(1, cssHeight - padTop - padBottom);
+      function xAt(i) {{ return padLeft + (count <= 1 ? plotW / 2 : ((i - start) / (count - 1)) * plotW); }}
+      function yAt(v) {{ return padTop + (1 - (v - minV) / (maxV - minV)) * plotH; }}
+
+      ctx.strokeStyle = '#eee';
+      ctx.fillStyle = '#888';
+      ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.textBaseline = 'middle';
+      var gridValues = opts.gridValues;
+      if (!gridValues) {{
+        gridValues = [];
+        var GRID_STEPS = 4;
+        for (var g = 0; g <= GRID_STEPS; g++) {{
+          gridValues.push(minV + (maxV - minV) * (g / GRID_STEPS));
+        }}
+      }}
+      gridValues.forEach(function (v) {{
+        var y = yAt(v);
+        ctx.beginPath();
+        ctx.moveTo(padLeft, y);
+        ctx.lineTo(cssWidth - padRight, y);
+        ctx.stroke();
+        ctx.fillText(v.toFixed(opts.decimals !== undefined ? opts.decimals : 1), 2, y);
+      }});
+
+      // 超買/超賣參考線（KD 常見的 20/80），用虛線跟一般格線區隔開。
+      if (opts.refLines) {{
+        ctx.save();
+        ctx.strokeStyle = '#ccc';
+        ctx.setLineDash([3, 3]);
+        opts.refLines.forEach(function (v) {{
+          var y = yAt(v);
+          ctx.beginPath();
+          ctx.moveTo(padLeft, y);
+          ctx.lineTo(cssWidth - padRight, y);
+          ctx.stroke();
+        }});
+        ctx.restore();
+      }}
+
+      if (opts.showDateLabels) {{
+        ctx.textBaseline = 'top';
+        var labelCount = Math.min(5, count);
+        for (var li = 0; li < labelCount; li++) {{
+          var idx = labelCount <= 1 ? start : start + Math.round((li / (labelCount - 1)) * (count - 1));
+          var x = xAt(idx);
+          ctx.fillText(dates[idx].slice(5), Math.max(padLeft, x - 16), cssHeight - padBottom + 4);
+        }}
+      }}
+
+      // K 棒先畫（當底），均線之類的折線後畫、疊在 K 棒上面才看得清楚。
+      if (opts.ohlc) {{
+        var oc = opts.ohlc;
+        var bodyW = Math.max(1, (plotW / count) * 0.62);
+        for (var ci = start; ci <= end; ci++) {{
+          var co = oc.open[ci], ch = oc.high[ci], cl = oc.low[ci], cc = oc.close[ci];
+          if (co === null || co === undefined || ch === null || ch === undefined ||
+              cl === null || cl === undefined || cc === null || cc === undefined) {{
+            continue;
+          }}
+          var cx = xAt(ci);
+          var up = cc >= co;
+          var color = up ? '#c0392b' : '#1e8449';
+          ctx.strokeStyle = color;
+          ctx.fillStyle = color;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(cx, yAt(ch));
+          ctx.lineTo(cx, yAt(cl));
+          ctx.stroke();
+          var yOpen = yAt(co), yClose = yAt(cc);
+          var bodyTop = Math.min(yOpen, yClose);
+          var bodyH = Math.max(1, Math.abs(yClose - yOpen));
+          ctx.fillRect(cx - bodyW / 2, bodyTop, bodyW, bodyH);
+        }}
+      }}
+
+      seriesList.forEach(function (s) {{
+        ctx.strokeStyle = s.color;
+        ctx.lineWidth = s.width;
+        ctx.beginPath();
+        var started = false;
+        for (var i = start; i <= end; i++) {{
+          var v = s.values[i];
+          if (v === null || v === undefined) {{ started = false; continue; }}
+          var x = xAt(i), y = yAt(v);
+          if (!started) {{ ctx.moveTo(x, y); started = true; }} else {{ ctx.lineTo(x, y); }}
+        }}
+        ctx.stroke();
+      }});
+
+      var clampedHover = Math.max(start, Math.min(end, hoverIdx));
+      var hx = xAt(clampedHover);
+      ctx.save();
+      ctx.strokeStyle = '#999';
+      ctx.setLineDash([4, 3]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(hx, padTop);
+      ctx.lineTo(hx, cssHeight - padBottom);
+      ctx.stroke();
+      // 十字線的橫線：只有價格圖（有帶 opts.ohlc）才畫，標的是收盤價那個
+      // Y 座標，橫向貫穿整個繪圖區，這樣才是完整的「十字」查價線，不是
+      // 只有豎線而已。
+      if (opts.ohlc) {{
+        var hoverCloseY = opts.ohlc.close[clampedHover];
+        if (hoverCloseY !== null && hoverCloseY !== undefined) {{
+          var hy = yAt(hoverCloseY);
+          ctx.beginPath();
+          ctx.moveTo(padLeft, hy);
+          ctx.lineTo(cssWidth - padRight, hy);
+          ctx.stroke();
+        }}
+      }}
+      ctx.restore();
+
+      // dotSeries 沒給就沿用 seriesList（KD 子圖是這樣，K/D 顯示什麼線就
+      // 點什麼點）；價格圖會另外傳 dotSeries 進來，因為「多點/單點查價
+      // 模式」影響的是十字線上要標幾個點，跟「畫面上畫了哪些均線」是
+      // 兩件事，不能直接共用 seriesList。
+      var dotSeries = opts.dotSeries || seriesList;
+      dotSeries.forEach(function (s) {{
+        var v = s.values[clampedHover];
+        if (v === null || v === undefined) return;
+        ctx.beginPath();
+        ctx.arc(hx, yAt(v), 3, 0, Math.PI * 2);
+        ctx.fillStyle = s.color;
+        ctx.fill();
+      }});
+
+      // 在十字線附近標一個小標籤，直接告訴使用者現在看的是哪一天、
+      // 收盤多少，不用低頭去看圖表下方那排文字才知道。
+      if (opts.showHoverLabel && opts.ohlc) {{
+        var hoverClose = opts.ohlc.close[clampedHover];
+        if (hoverClose !== null && hoverClose !== undefined) {{
+          var labelText = dates[clampedHover].slice(5) + ' 收盤 ' + hoverClose.toFixed(2);
+          ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
+          var textW = ctx.measureText(labelText).width;
+          var boxW = textW + 12, boxH = 18;
+          var boxX = Math.min(Math.max(hx - boxW / 2, padLeft), cssWidth - padRight - boxW);
+          var boxY = padTop;
+          ctx.fillStyle = 'rgba(30,30,30,0.82)';
+          ctx.beginPath();
+          if (ctx.roundRect) {{
+            ctx.roundRect(boxX, boxY, boxW, boxH, 4);
+          }} else {{
+            ctx.rect(boxX, boxY, boxW, boxH);
+          }}
+          ctx.fill();
+          ctx.fillStyle = '#fff';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(labelText, boxX + 6, boxY + boxH / 2);
+        }}
+      }}
+
+      return {{ start: start, end: end, padLeft: padLeft, plotW: plotW }};
+    }}
+
+    // hoverIdx 省略時預設顯示最新一天（游標離開圖表、剛打開圖表時的預設畫面）。
+    function renderChart(stockId, hoverIdx) {{
+      var hist = PRICE_HISTORY[stockId];
+      if (!hist || !hist.dates.length) return;
+      var n = hist.dates.length;
+      if (hoverIdx === null || hoverIdx === undefined) hoverIdx = chartRange.end;
+      hoverIdx = Math.max(chartRange.start, Math.min(chartRange.end, hoverIdx));
+
+      var priceSeries = PRICE_SERIES.filter(function (s) {{ return seriesVisible[s.key]; }})
+        .map(function (s) {{ return {{ key: s.key, color: s.color, width: s.width, values: hist[s.key] }}; }});
+      var closeDot = {{ key: 'close', color: '#1a1a1a', values: hist.close }};
+      // 多點模式：原本每條顯示中的均線各一個點，再加上收盤價那一點；
+      // 單點模式：不管勾了哪些均線，十字線上只標收盤價這一個點。
+      var dotSeries = crosshairMode === 'single' ? [closeDot] : priceSeries.concat([closeDot]);
+      var priceState = drawPanel(priceChart, hist.dates, priceSeries, hoverIdx, {{
+        padBottom: 8, showDateLabels: false, range: chartRange,
+        ohlc: {{ open: hist.open, high: hist.high, low: hist.low, close: hist.close }},
+        dotSeries: dotSeries, showHoverLabel: true,
+      }});
+
+      var kdOn = hist.k && hist.d && (seriesVisible.k || seriesVisible.d);
+      canvasWrap.classList.toggle('kd-hidden', !kdOn);
+      var kdState = null;
+      if (kdOn) {{
+        var kdSeries = KD_SERIES.filter(function (s) {{ return seriesVisible[s.key]; }})
+          .map(function (s) {{ return {{ key: s.key, color: s.color, width: s.width, values: hist[s.key] }}; }});
+        kdState = drawPanel(kdChart, hist.dates, kdSeries, hoverIdx, {{
+          fixedRange: [0, 100], decimals: 0, gridValues: [0, 20, 50, 80, 100], refLines: [20, 80],
+          padTop: 6, padBottom: 22, showDateLabels: true, range: chartRange,
+        }});
+      }}
+
+      var infoEl = document.getElementById('chartInfo');
+      if (infoEl) {{
+        var parts = [hist.dates[hoverIdx]];
+        var closeVal = hist.close[hoverIdx];
+        parts.push('收盤：' + (closeVal === null || closeVal === undefined ? '—' : closeVal.toFixed(2)));
+        PRICE_SERIES.forEach(function (s) {{
+          if (!seriesVisible[s.key]) return;
+          var v = hist[s.key][hoverIdx];
+          parts.push(s.label + '：' + (v === null || v === undefined ? '—' : v.toFixed(2)));
+        }});
+        if (hist.k && hist.d) {{
+          KD_SERIES.forEach(function (s) {{
+            if (!seriesVisible[s.key]) return;
+            var v = hist[s.key][hoverIdx];
+            parts.push(s.label + '：' + (v === null || v === undefined ? '—' : v.toFixed(1)));
+          }});
+        }}
+        infoEl.textContent = parts.join('　');
+      }}
+
+      // 兩個 canvas 寬度相同，滑鼠/觸控算最近的資料點時共用價格圖那組座標
+      // 換算參數即可，不需要分別存兩份；KD 子圖被隱藏時退回用它自己的狀態。
+      priceChart._chartState = priceState || kdState;
+      resetBtn.hidden = !(chartRange.start > 0 || chartRange.end < n - 1);
+      // 「回到最新」跟「顯示全部區間」是兩個不同情境：後者是「有縮放就show」，
+      // 前者專門處理「縮放/平移後，最新一天（今天）被移出可視範圍看不到」
+      // 這個使用者實際回報過的情況，只要最新一天不在畫面裡就顯示，不管
+      // 目前是不是有縮放。
+      jumpLatestBtn.hidden = chartRange.end >= n - 1;
+    }}
+
+    function updateLegendUI() {{
+      document.querySelectorAll('.legend-item[data-series]').forEach(function (btn) {{
+        var key = btn.getAttribute('data-series');
+        btn.classList.toggle('off', !seriesVisible[key]);
+      }});
+      kdGroupToggle.classList.toggle('off', !(seriesVisible.k || seriesVisible.d));
+    }}
+
+    function openChart(stockId, name) {{
+      if (!PRICE_HISTORY[stockId]) return;
+      currentChartStockId = stockId;
+      chartRange = {{ start: 0, end: PRICE_HISTORY[stockId].dates.length - 1 }};
+      document.getElementById('chartStockLabel').textContent = (name || '') + '（' + stockId + '）';
+      document.getElementById('tableView').hidden = true;
+      document.getElementById('chartView').hidden = false;
+      updateLegendUI();
+      // hidden 屬性剛拿掉的當下，canvas 所在的容器可能還沒完成排版，
+      // clientWidth/clientHeight 會量到 0，用 requestAnimationFrame 等一次
+      // 排版完成再畫圖，避免圖表整個空白。
+      requestAnimationFrame(function () {{
+        renderChart(stockId, null);
+        resizeFrame();
+      }});
+    }}
+
+    function closeChart() {{
+      document.getElementById('chartView').hidden = true;
+      document.getElementById('tableView').hidden = false;
+      currentChartStockId = null;
+      resizeFrame();
+    }}
+
+    document.querySelectorAll('.price-link').forEach(function (el) {{
+      el.addEventListener('click', function () {{
+        openChart(el.getAttribute('data-stock-id'), el.getAttribute('data-name'));
+      }});
+    }});
+    document.querySelector('.chart-back-btn').addEventListener('click', closeChart);
+
+    // 圖例點下去切換該條線顯示/隱藏；K、D 都關掉時 renderChart() 裡會自動
+    // 把整個 KD 子圖藏起來（見 kdOn 判斷），不需要在這裡另外處理。
+    document.querySelectorAll('.legend-item[data-series]').forEach(function (btn) {{
+      btn.addEventListener('click', function () {{
+        var key = btn.getAttribute('data-series');
+        seriesVisible[key] = !seriesVisible[key];
+        updateLegendUI();
+        if (currentChartStockId) {{
+          renderChart(currentChartStockId, null);
+          resizeFrame();
+        }}
+      }});
+    }});
+
+    // 「KD 全部」是把 K、D 兩條線當一組一起開/關的捷徑：兩條有任一條開著
+    // 就視為目前「開」，點一下就兩條一起關掉；兩條都關著的時候點一下就
+    // 兩條一起打開。
+    kdGroupToggle.addEventListener('click', function () {{
+      var bothOn = seriesVisible.k && seriesVisible.d;
+      seriesVisible.k = !bothOn;
+      seriesVisible.d = !bothOn;
+      updateLegendUI();
+      if (currentChartStockId) {{
+        renderChart(currentChartStockId, null);
+        resizeFrame();
+      }}
+    }});
+
+    modeBtn.addEventListener('click', function () {{
+      crosshairMode = crosshairMode === 'multi' ? 'single' : 'multi';
+      modeBtn.textContent = '查價模式：' + (crosshairMode === 'multi' ? '多點' : '單點');
+      if (currentChartStockId) renderChart(currentChartStockId, null);
+    }});
+
+    resetBtn.addEventListener('click', function () {{
+      if (!currentChartStockId) return;
+      chartRange = {{ start: 0, end: PRICE_HISTORY[currentChartStockId].dates.length - 1 }};
+      renderChart(currentChartStockId, null);
+    }});
+
+    // 「回到最新」保留目前縮放的天數範圍（span），只是把整個窗口平移到
+    // 結尾對齊最新一天——跟「顯示全部區間」不一樣，不會把縮放重置掉，
+    // 單純解決「查價查到比較早的日期、放大過後看不到今天」這件事。
+    jumpLatestBtn.addEventListener('click', function () {{
+      if (!currentChartStockId) return;
+      var hist = PRICE_HISTORY[currentChartStockId];
+      var n = hist.dates.length;
+      var span = chartRange.end - chartRange.start + 1;
+      var newEnd = n - 1;
+      var newStart = Math.max(0, newEnd - span + 1);
+      chartRange = {{ start: newStart, end: newEnd }};
+      renderChart(currentChartStockId, null);
+    }});
+
+    function idxFromClientX(clientX) {{
+      var state = priceChart._chartState;
+      if (!state) return null;
+      var rect = priceChart.getBoundingClientRect();
+      var count = state.end - state.start + 1;
+      var rel = (clientX - rect.left - state.padLeft) / state.plotW;
+      return Math.round(state.start + rel * (count - 1));
+    }}
+
+    // 把 {{newStart, newEnd}} 夾回 [0, n-1] 的合法範圍內，天數（span）不變、
+    // 只是整體往左或往右推回界線內——縮放跟平移最後都會呼叫這個，邏輯只
+    // 寫一次。
+    function clampRange(newStart, newEnd, n) {{
+      if (newStart < 0) {{ newEnd -= newStart; newStart = 0; }}
+      if (newEnd > n - 1) {{ newStart -= (newEnd - (n - 1)); newEnd = n - 1; }}
+      newStart = Math.max(0, newStart);
+      newEnd = Math.min(n - 1, newEnd);
+      return {{ start: newStart, end: newEnd }};
+    }}
+
+    // 兩指縮放（手機）／滾輪（滑鼠，桌機測試用）都是同一件事：改變目前
+    // chartRange 涵蓋的天數（縮放），並讓「兩指中點／滑鼠所在位置」對應
+    // 的那個資料點盡量停留在畫面上同一個位置，體感才會像「用手指撐開/
+    // 收攏那個點附近」，而不是整段區間跳來跳去。
+    function applyZoom(factor, anchorIdx) {{
+      if (!currentChartStockId) return;
+      var hist = PRICE_HISTORY[currentChartStockId];
+      var n = hist.dates.length;
+      var span = chartRange.end - chartRange.start + 1;
+      var newSpan = Math.max(10, Math.min(n, Math.round(span / factor)));
+      if (newSpan === span) return;
+      var anchorRatio = span <= 1 ? 0 : (anchorIdx - chartRange.start) / (span - 1);
+      var newStart = Math.round(anchorIdx - anchorRatio * (newSpan - 1));
+      chartRange = clampRange(newStart, newStart + newSpan - 1, n);
+      renderChart(currentChartStockId, anchorIdx);
+    }}
+
+    // 平移：天數範圍（span）不變，整段窗口往前或往後移 daysDelta 天——這是
+    // 為了解決縮放/查價到比較早的日期之後，最新一天被移出可視範圍、又不
+    // 想整個重置縮放回全區間的情況。正值往「更早」的日期移動，負值往
+    // 「更新」的日期移動（見呼叫端手勢方向的換算）。
+    function applyPan(daysDelta) {{
+      if (!currentChartStockId || !daysDelta) return;
+      var hist = PRICE_HISTORY[currentChartStockId];
+      var n = hist.dates.length;
+      var span = chartRange.end - chartRange.start + 1;
+      var newStart = Math.round(chartRange.start - daysDelta);
+      chartRange = clampRange(newStart, newStart + span - 1, n);
+      renderChart(currentChartStockId, null);
+    }}
+
+    function touchDistance(touches) {{
+      var dx = touches[0].clientX - touches[1].clientX;
+      var dy = touches[0].clientY - touches[1].clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    }}
+
+    var pinchState = null;
+
+    // 價格圖跟 KD 子圖是同一個查價/縮放互動的兩個畫面，滑鼠/觸控在任一個
+    // 畫布上操作都要同步反映到兩張圖，所以兩個 canvas 都掛同一組事件處理，
+    // 而不是各自獨立。單指＝查價（拖曳看該日數值），雙指＝縮放（撐開/
+    // 收攏改變顯示的天數範圍），滑鼠滾輪在桌機上也能縮放，方便沒有觸控
+    // 螢幕時測試。
+    [priceChart, kdChart].forEach(function (canvas) {{
+      canvas.addEventListener('mousemove', function (ev) {{
+        if (!currentChartStockId) return;
+        var idx = idxFromClientX(ev.clientX);
+        if (idx !== null) renderChart(currentChartStockId, idx);
+      }});
+      canvas.addEventListener('mouseleave', function () {{
+        if (currentChartStockId) renderChart(currentChartStockId, null);
+      }});
+      canvas.addEventListener('wheel', function (ev) {{
+        if (!currentChartStockId) return;
+        ev.preventDefault();
+        // 觸控板兩指左右滑會產生比較大的 deltaX，視為「平移」而不是縮放；
+        // 一般滑鼠滾輪幾乎只有 deltaY，維持原本的縮放行為。
+        if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY)) {{
+          var state = priceChart._chartState;
+          if (state) {{
+            var span = state.end - state.start + 1;
+            applyPan((ev.deltaX / state.plotW) * span);
+          }}
+          return;
+        }}
+        var idx = idxFromClientX(ev.clientX);
+        if (idx === null) return;
+        applyZoom(ev.deltaY < 0 ? 1.15 : 1 / 1.15, idx);
+      }}, {{ passive: false }});
+      canvas.addEventListener('touchstart', function (ev) {{
+        if (!currentChartStockId) return;
+        if (ev.touches.length >= 2) {{
+          pinchState = {{
+            dist: touchDistance(ev.touches),
+            midX: (ev.touches[0].clientX + ev.touches[1].clientX) / 2,
+          }};
+        }} else if (ev.touches.length === 1) {{
+          var idx = idxFromClientX(ev.touches[0].clientX);
+          if (idx !== null) renderChart(currentChartStockId, idx);
+        }}
+      }}, {{ passive: true }});
+      canvas.addEventListener('touchmove', function (ev) {{
+        if (!currentChartStockId) return;
+        if (ev.touches.length >= 2 && pinchState) {{
+          // 雙指同時支援縮放（兩指距離改變）跟平移（兩指中點整體移動），
+          // 使用者常常是「邊撐開邊移動」，兩者分開判斷、互不干擾。
+          var newDist = touchDistance(ev.touches);
+          var newMidX = (ev.touches[0].clientX + ev.touches[1].clientX) / 2;
+          var factor = newDist / pinchState.dist;
+          if (Math.abs(factor - 1) > 0.03) {{
+            var anchorIdx = idxFromClientX(newMidX);
+            if (anchorIdx !== null) applyZoom(factor, anchorIdx);
+            pinchState.dist = newDist;
+          }}
+          var midShift = newMidX - pinchState.midX;
+          if (Math.abs(midShift) > 2) {{
+            var state = priceChart._chartState;
+            if (state) {{
+              var span = state.end - state.start + 1;
+              applyPan((midShift / state.plotW) * span);
+            }}
+            pinchState.midX = newMidX;
+          }}
+          ev.preventDefault();
+        }} else if (ev.touches.length === 1) {{
+          var idx = idxFromClientX(ev.touches[0].clientX);
+          if (idx !== null) renderChart(currentChartStockId, idx);
+          ev.preventDefault();
+        }}
+      }}, {{ passive: false }});
+      canvas.addEventListener('touchend', function (ev) {{
+        if (ev.touches.length < 2) pinchState = null;
+      }});
+    }});
+
     function refresh() {{
       applyTableMaxHeight();
       resizeFrame();
+      if (currentChartStockId) {{ renderChart(currentChartStockId, null); }}
     }}
 
     refresh();
