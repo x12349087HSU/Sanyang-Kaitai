@@ -98,15 +98,7 @@ def render_screen_pdf(result: MaScreenResult, *, universe_label: str = "0050 成
     as_of = result.as_of_date
     as_of_text = as_of.isoformat() if as_of else "無可用資料"
 
-    story = [
-        Paragraph(f"{universe_label}均線篩選", styles["Title"]),
-        Paragraph(
-            f"篩選範圍：{universe_label}（共 {len(result.rows) + len(result.skipped)} 檔）　"
-            f"資料日期：{as_of_text}　產生時間：{result.generated_at.isoformat()}　"
-            f"資料來源：FinMind（+ 證交所官方備援）",
-            styles["Meta"],
-        ),
-    ]
+    story = []
 
     for tier in TIER_ORDER:
         rows = result.rows_by_tier(tier)
@@ -128,6 +120,12 @@ def render_screen_pdf(result: MaScreenResult, *, universe_label: str = "0050 成
         story.append(Spacer(1, 6))
 
     story.append(Spacer(1, 8))
+    story.append(Paragraph(
+        f"篩選範圍：{universe_label}（共 {len(result.rows) + len(result.skipped)} 檔）　"
+        f"資料日期：{as_of_text}　產生時間：{result.generated_at.isoformat()}　"
+        f"資料來源：FinMind（+ 證交所官方備援）",
+        styles["Meta"],
+    ))
     story.append(Paragraph(
         "均線分級為巢狀判定：多頭與空頭各四級，例如「三陽開泰」代表同時站上 "
         "5MA/10MA/20MA，不代表站上或跌破 60MA——若也站上 60MA，會被歸類到更高一級的 "

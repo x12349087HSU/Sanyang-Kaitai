@@ -30,7 +30,7 @@ _TIER_ACCENT = {
 # (欄位 key, 表頭文字)。key 要跟 _row_attrs() 回傳的 dict key 一致，且必須是
 # 純小寫（加連字號沒關係），因為會直接拿去組 data-{key} 屬性名稱。
 _COLUMNS = [
-    ("tier", "分類"),
+    ("tier", "訊號"),
     ("stock-id", "代號"),
     ("name", "名稱"),
     ("close", "收盤價"),
@@ -127,7 +127,7 @@ def _legend_html() -> str:
     )
     return f"""
     <details class="legend">
-      <summary>各分類代表意義（點擊展開）</summary>
+      <summary>訊號意義</summary>
       <ul>{items}</ul>
     </details>"""
 
@@ -147,8 +147,6 @@ def _skipped_html(skipped: list[tuple[str, str, str]]) -> str:
 
 
 def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 成分股") -> str:
-    as_of = result.as_of_date
-    as_of_text = as_of.isoformat() if as_of else "無可用資料"
     title = f"{universe_label}均線篩選"
 
     ordered_rows: list[tuple[int, object]] = [
@@ -169,9 +167,11 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
     margin: 0; padding: 1.5rem; background: #f7f5f2; color: #1a1a1a;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
   }}
-  h1 {{ font-size: 1.4rem; margin: 0 0 0.2rem; }}
-  .meta {{ color: #666; font-size: 0.85rem; margin-bottom: 0.6rem; }}
-  details.legend {{ margin-bottom: 1rem; }}
+  /* 這個按鈕移到表格下方之後改成置中顯示：details.legend 本身是區塊元素，
+     summary 是 inline-flex（行內層級的盒子），對容器套 text-align:center
+     就能讓 summary 這顆按鈕整個置中；展開後的 <ul> 說明清單則另外蓋回
+     text-align:left，維持清單內文左對齊、只有按鈕本身置中。 */
+  details.legend {{ margin: 1.4rem 0 0; text-align: center; }}
   details.legend summary {{
     cursor: pointer; list-style: none; user-select: none;
     display: inline-flex; align-items: center; gap: 0.5rem;
@@ -186,6 +186,7 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
   }}
   details.legend[open] summary::after {{ transform: rotate(180deg); }}
   details.legend ul {{
+    text-align: left;
     font-size: 0.85rem; color: #555; line-height: 1.9; margin: 0.6rem 0 0;
     background: #fff; border-radius: 10px; padding: 0.9rem 1rem 0.9rem 2.2rem;
     box-shadow: 0 1px 3px rgba(0,0,0,0.06);
@@ -197,7 +198,7 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
   }}
   .table-wrap {{
     background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-    overflow: auto; max-height: 65vh;
+    overflow: auto; max-height: var(--table-max-h, 65vh);
   }}
   table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
   thead {{ position: sticky; top: 0; z-index: 2; background: #2a2a2a; }}
@@ -250,7 +251,7 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
   td.empty {{ color: #888; text-align: center; white-space: normal; }}
   tr.no-match-row td {{ color: #888; text-align: center; white-space: normal; }}
   details.skipped {{ font-size: 0.8rem; color: #777; margin-top: 1rem; }}
-  footer {{ margin-top: 1.6rem; font-size: 0.78rem; color: #888; line-height: 1.7; }}
+  footer {{ margin-top: 1.2rem; font-size: 0.78rem; color: #888; line-height: 1.7; text-align: center; }}
   @media (max-width: 480px) {{
     body {{ padding: 1rem; }}
     table {{ font-size: 0.78rem; }}
@@ -259,9 +260,6 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
 </style>
 </head>
 <body>
-  <h1>{html_lib.escape(title)}</h1>
-  <p class="meta">篩選範圍：{html_lib.escape(universe_label)}（共 {len(result.rows) + len(result.skipped)} 檔）　資料日期：{as_of_text}　產生時間：{result.generated_at.isoformat()}　資料來源：FinMind（+ 證交所官方備援）</p>
-  {_legend_html()}
   <div class="table-wrap">
     <table id="dataTable">
       <thead>
@@ -273,13 +271,8 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
     </table>
   </div>
   {_skipped_html(result.skipped)}
+  {_legend_html()}
   <footer>
-    均線分級為巢狀判定：多頭（紅）與空頭（綠）各四級，例如「{TIER_LABELS[3]}」代表
-    同時站上 5MA/10MA/20MA，不代表站上或跌破 60MA——若也站上 60MA，會被歸類到更高
-    一級的「{TIER_LABELS[4]}」；空頭四級是鏡像邏輯，條件改成「跌破」對應數量的均線。
-    多空訊號不一致（例如站上 5MA 但跌破 10MA）的股票不列入這八個等級。
-    5MA/10MA/20MA/60MA 皆為收盤價簡單移動平均（SMA），非官方統一標準，表格中未
-    顯示各均線數值，僅顯示分類結果。<br />
     {html_lib.escape(config.DISCLAIMER_TEXT)}
   </footer>
   <script>
@@ -412,6 +405,69 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
         applyFilters();
       }});
     }});
+
+    // 這份 HTML 目前只有兩種嵌入方式：獨立下載開啟（不在 iframe 裡，
+    // window.frameElement 會是 null，以下整段都是 no-op），或者被 Streamlit
+    // 的 components.html 包在一個 iframe 裡（srcdoc 內容繼承外層頁面的
+    // origin，同源，window.frameElement 抓得到外層那個 <iframe> 元素本身）。
+    //
+    // .table-wrap 的高度上限（--table-max-h）跟外層 iframe 的高度，這兩者
+    // 刻意分成「先算表格上限、再貼合 iframe」單向流程，不能反過來：如果表格
+    // 上限用 65dvh 這種相對「iframe 自己目前高度」的單位，而 iframe 高度又是
+    // 靠 JS 貼合表格內容算出來的，兩者會互相依賴、越滾越大（iframe 長高 →
+    // dvh 上限跟著變大 → 表格因此顯示更多內容不用內部捲動 → 內容變高 → iframe
+    // 又要跟著長高……），實際症狀就是 iframe 最後長到遠超過使用者看得到的
+    // 範圍，畫面上其他元素（例如側欄按鈕、下方的頁尾說明）看起來像是被推到
+    // 很奇怪的位置、或者篩選面板的 position:fixed 定位跑掉蓋住不該蓋的地方。
+    // 修法：表格高度上限改成用「外層真正瀏覽器視窗」的高度（優先讀
+    // window.parent.innerHeight，抓不到才退回自己的 window.innerHeight）算出
+    // 一個固定像素數，這個值不受我們自己調整 iframe 高度的動作影響，才能
+    // 真正只算一次就穩定下來；iframe 的高度則貼合「表格上限已經固定之後」的
+    // 內容總高度（有界，不會因為篩到的檔數變多就跟著暴增）。
+    function computeTableMaxHeightPx() {{
+      var refWin = window;
+      try {{
+        if (window.parent && window.parent !== window && window.parent.innerHeight) {{
+          refWin = window.parent;
+        }}
+      }} catch (e) {{}}
+      var vh = refWin.innerHeight || window.innerHeight || 800;
+      return Math.max(280, Math.round(vh * 0.6));
+    }}
+
+    function applyTableMaxHeight() {{
+      document.documentElement.style.setProperty('--table-max-h', computeTableMaxHeightPx() + 'px');
+    }}
+
+    function resizeFrame() {{
+      try {{
+        if (window.frameElement) {{
+          window.frameElement.style.height = document.documentElement.scrollHeight + 'px';
+        }}
+      }} catch (e) {{}}
+    }}
+
+    function refresh() {{
+      applyTableMaxHeight();
+      resizeFrame();
+    }}
+
+    refresh();
+    window.addEventListener('load', refresh);
+    window.addEventListener('resize', refresh);
+    try {{
+      if (window.parent && window.parent !== window) {{
+        window.parent.addEventListener('resize', refresh);
+      }}
+    }} catch (e) {{}}
+    // 展開/收合「各分類代表意義」「查詢失敗清單」這兩個 <details> 會改變內容
+    // 高度，只需要重新貼合 iframe 高度，不需要重算表格上限。
+    document.querySelectorAll('details').forEach(function (d) {{
+      d.addEventListener('toggle', resizeFrame);
+    }});
+    if (window.ResizeObserver) {{
+      new ResizeObserver(resizeFrame).observe(document.body);
+    }}
   </script>
 </body>
 </html>"""
