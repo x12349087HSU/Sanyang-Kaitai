@@ -253,7 +253,17 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
   details.skipped {{ font-size: 0.8rem; color: #777; margin-top: 1rem; }}
   footer {{ margin-top: 1.2rem; font-size: 0.78rem; color: #888; line-height: 1.7; text-align: center; }}
   @media (max-width: 480px) {{
-    body {{ padding: 1rem; }}
+    /* 手機窄螢幕：body 保留一點點留白（0.4rem），讓「訊號意義」跟免責聲明
+       這類純文字內容不會整個貼死螢幕邊緣、不好讀；但表格本身用負邊界
+       「跳出」body 的留白，兩側直接貼齊螢幕邊緣，拿掉圓角/陰影的卡片感，
+       這樣真正吃到滿版的是使用者最主要在看的表格資料，而不是連文字說明
+       都硬貼邊緣、反而不好讀。 */
+    body {{ padding: 0.5rem 0.4rem; }}
+    .table-wrap {{
+      border-radius: 0; box-shadow: none;
+      margin-left: -0.4rem; margin-right: -0.4rem;
+      width: calc(100% + 0.8rem);
+    }}
     table {{ font-size: 0.78rem; }}
     td {{ padding: 0.3rem 0.4rem; }}
   }}
@@ -431,8 +441,13 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
           refWin = window.parent;
         }}
       }} catch (e) {{}}
+      // 從 0.6 調高到 0.8：原本表格只吃視窗高度的六成，下面留了一大截
+      // 空白（圖例按鈕、免責聲明加起來遠用不到那麼多），改成八成，讓
+      // 使用者一打開畫面表格本身就佔滿幾乎整個可視範圍，更有「滿版」的
+      // 感覺，同時還是留一點空間讓圖例/免責聲明看得到、不會被表格擠到
+      // 螢幕外面。
       var vh = refWin.innerHeight || window.innerHeight || 800;
-      return Math.max(280, Math.round(vh * 0.6));
+      return Math.max(280, Math.round(vh * 0.8));
     }}
 
     function applyTableMaxHeight() {{

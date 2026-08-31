@@ -71,7 +71,9 @@ st.markdown(
         max-width: 100%;
     }
     @media (max-width: 640px) {
-        .main .block-container { padding-left: 0.6rem; padding-right: 0.6rem; }
+        /* 手機寬度下，主內容區左右留白幾乎收到 0，讓下方內嵌的篩選結果
+           表格可以貼齊螢幕邊緣（真正「滿版」），不是只留一點點窄邊而已。 */
+        .main .block-container { padding-left: 0.3rem; padding-right: 0.3rem; }
     }
     /* Streamlit 原生的側欄開關按鈕（收合時是左上角一個很小的箭頭圖示）預設
        不太顯眼，使用者反映找不到。這裡直接放大圖示、加上品牌色圓形底色跟
