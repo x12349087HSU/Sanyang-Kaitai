@@ -186,13 +186,18 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
 <title>{html_lib.escape(title)}</title>
 <style>
   :root {{ color-scheme: light; }}
   * {{ box-sizing: border-box; }}
+  /* 獨立下載開啟這份 HTML（不在 Streamlit 裡）時，這裡就是最外層頁面本身，
+     同樣要關掉原生縮放手勢，理由跟 app_streamlit.py 裡同一段註解一樣：
+     避免手指縮放圖表時不小心觸發整頁縮放、卡住滑不動。 */
+  html {{ touch-action: pan-x pan-y; }}
   body {{
     margin: 0; padding: 1.5rem; background: #f7f5f2; color: #1a1a1a;
+    touch-action: pan-x pan-y;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
   }}
   /* 這個按鈕移到表格下方之後改成置中顯示：details.legend 本身是區塊元素，
@@ -321,9 +326,15 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
     display: flex; flex-direction: column; gap: 0.5rem;
     width: 100%; height: var(--table-max-h, 60vh);
   }}
-  .price-canvas {{ display: block; width: 100%; flex: 3 1 0; min-height: 0; touch-action: none; }}
+  /* touch-action: none 會讓瀏覽器整個放棄處理這個元素上的所有觸控手勢
+     （包含垂直捲動），全部丟給 JS。圖表在手機直向畫面上幾乎佔滿整個
+     可視高度，這樣一來使用者在圖表範圍內想垂直滑動翻頁，會完全滑不動，
+     只能滑到圖表外面那一點點邊緣才行。改成 pan-y：瀏覽器原生負責垂直
+     捲動（一定會動、不會被 JS 擋住），水平方向（拖曳查價）跟兩指縮放/
+     平移還是留給下面 JS 自己判斷、自己 preventDefault。 */
+  .price-canvas {{ display: block; width: 100%; flex: 3 1 0; min-height: 0; touch-action: pan-y; }}
   .kd-canvas {{
-    display: block; width: 100%; flex: 1 1 0; min-height: 70px; touch-action: none;
+    display: block; width: 100%; flex: 1 1 0; min-height: 70px; touch-action: pan-y;
     border-top: 1px solid #eee;
   }}
   /* K、D 兩條線都關掉時，乾脆把 KD 子圖整塊藏起來、讓價格圖長高補滿，
@@ -1060,17 +1071,32 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
     }}
 
     var pinchState = null;
+    // 單指手勢一開始不知道使用者想「拖曳查價」（水平為主）還是「捲動頁面」
+    // （垂直為主），要等移動超過一個小門檻之後才依主要移動方向判斷一次，
+    // 判斷完在同一次手勢裡不再改變。touchIntent 是 null（還沒判斷）／
+    // 'chart'（水平為主，當拖曳查價處理，需要 preventDefault）／'scroll'
+    // （垂直為主，完全不處理，讓瀏覽器自己捲動頁面）。手機版面上圖表幾乎
+    // 佔滿整個畫面高度，如果不這樣分辨方向，垂直滑動也會被當成查價手勢
+    // 攔截掉，會滑不動頁面。
+    var touchIntent = null;
+    var touchStartX = 0, touchStartY = 0;
+    var TOUCH_INTENT_PX = 8;
+
+    function updateCrosshairFromX(clientX) {{
+      var idx = idxFromClientX(clientX);
+      if (idx !== null) renderChart(currentChartStockId, idx);
+    }}
 
     // 價格圖跟 KD 子圖是同一個查價/縮放互動的兩個畫面，滑鼠/觸控在任一個
     // 畫布上操作都要同步反映到兩張圖，所以兩個 canvas 都掛同一組事件處理，
-    // 而不是各自獨立。單指＝查價（拖曳看該日數值），雙指＝縮放（撐開/
-    // 收攏改變顯示的天數範圍），滑鼠滾輪在桌機上也能縮放，方便沒有觸控
-    // 螢幕時測試。
+    // 而不是各自獨立。單指水平拖曳＝查價（拖曳看該日數值），單指垂直拖曳
+    // ＝正常捲動頁面（見上面 touchIntent 的說明），雙指＝縮放/平移（撐開/
+    // 收攏改變顯示的天數範圍、或整組平移），滑鼠滾輪在桌機上也能縮放/
+    // 平移，方便沒有觸控螢幕時測試。
     [priceChart, kdChart].forEach(function (canvas) {{
       canvas.addEventListener('mousemove', function (ev) {{
         if (!currentChartStockId) return;
-        var idx = idxFromClientX(ev.clientX);
-        if (idx !== null) renderChart(currentChartStockId, idx);
+        updateCrosshairFromX(ev.clientX);
       }});
       canvas.addEventListener('mouseleave', function () {{
         if (currentChartStockId) renderChart(currentChartStockId, null);
@@ -1099,16 +1125,17 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
             dist: touchDistance(ev.touches),
             midX: (ev.touches[0].clientX + ev.touches[1].clientX) / 2,
           }};
+          touchIntent = null;
         }} else if (ev.touches.length === 1) {{
-          var idx = idxFromClientX(ev.touches[0].clientX);
-          if (idx !== null) renderChart(currentChartStockId, idx);
+          touchIntent = null;
+          touchStartX = ev.touches[0].clientX;
+          touchStartY = ev.touches[0].clientY;
         }}
       }}, {{ passive: true }});
       canvas.addEventListener('touchmove', function (ev) {{
         if (!currentChartStockId) return;
         if (ev.touches.length >= 2 && pinchState) {{
-          // 雙指同時支援縮放（兩指距離改變）跟平移（兩指中點整體移動），
-          // 使用者常常是「邊撐開邊移動」，兩者分開判斷、互不干擾。
+          // 雙指一律當縮放/平移手勢，跟垂直捲動判斷無關，永遠攔截。
           var newDist = touchDistance(ev.touches);
           var newMidX = (ev.touches[0].clientX + ev.touches[1].clientX) / 2;
           var factor = newDist / pinchState.dist;
@@ -1127,14 +1154,32 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
             pinchState.midX = newMidX;
           }}
           ev.preventDefault();
-        }} else if (ev.touches.length === 1) {{
-          var idx = idxFromClientX(ev.touches[0].clientX);
-          if (idx !== null) renderChart(currentChartStockId, idx);
-          ev.preventDefault();
+          return;
         }}
+        if (ev.touches.length !== 1) return;
+        if (touchIntent === 'scroll') return; // 已判定是垂直捲動，交給瀏覽器，什麼都不做
+        var t = ev.touches[0];
+        if (touchIntent === null) {{
+          var dx = t.clientX - touchStartX;
+          var dy = t.clientY - touchStartY;
+          if (Math.abs(dx) < TOUCH_INTENT_PX && Math.abs(dy) < TOUCH_INTENT_PX) {{
+            return; // 移動還太小，先不判斷方向、也先不畫，避免手抖誤觸
+          }}
+          touchIntent = Math.abs(dx) > Math.abs(dy) ? 'chart' : 'scroll';
+          if (touchIntent === 'scroll') return;
+        }}
+        // 走到這裡代表 touchIntent === 'chart'（水平拖曳查價）。
+        updateCrosshairFromX(t.clientX);
+        ev.preventDefault();
       }}, {{ passive: false }});
       canvas.addEventListener('touchend', function (ev) {{
         if (ev.touches.length < 2) pinchState = null;
+        // 手指全部離開、而且這次手勢從頭到尾移動距離都很小 → 判定成單純
+        // 點一下，直接顯示點擊位置那天的數值（不需要真的拖曳才能查價）。
+        if (ev.touches.length === 0 && touchIntent === null) {{
+          updateCrosshairFromX(touchStartX);
+        }}
+        touchIntent = null;
       }});
     }});
 
