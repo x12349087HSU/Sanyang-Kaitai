@@ -1,0 +1,17 @@
+# Render Blueprint：讓 https://dashboard.render.com 用「New Blueprint」直接讀這個檔案
+# 自動建立 API 服務，不用手動一個一個欄位填。這個服務只跑 etf_screener/api.py
+# （FastAPI），跟 Streamlit 版（部署在 Streamlit Community Cloud，跟這裡無關）
+# 是兩個獨立的部署目標，分別對應「篩選器APP」手機殼跟網頁版兩種前端。
+services:
+  - type: web
+    name: ma-screener-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt -r requirements-api.txt
+    startCommand: uvicorn etf_screener.api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      # 不要在這裡直接寫密碼——sync: false 代表 Render 會在建立服務時另外
+      # 跳出欄位讓你手動輸入，值不會進 git/repo，跟 Streamlit Cloud 的
+      # Secrets 是同一種「密碼不進版本控制」的做法。
+      - key: APP_PASSWORD
+        sync: false

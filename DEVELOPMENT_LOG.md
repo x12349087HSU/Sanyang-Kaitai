@@ -564,7 +564,55 @@ Pro Max 上實測確認（「目前已經正常了」）。
   執行 Python 產生 HTML 做基本檢查，實際視覺呈現與手勢是否順手，最終都要
   依賴使用者在真實瀏覽器/手機上測試回報，見第 12 節的除錯過程。
 
-## 14. 如果要繼續開發，建議先看這幾個檔案
+## 14. 行動 App 化：新增 API 層，衍生出獨立的「篩選器APP」專案
+
+使用者評估過「直接用 Flutter/原生重寫」跟「用 Capacitor 把現有網頁包成手機殼」
+兩條路之後（前者要把 `screen_page.py` 手刻的 Canvas 圖表、Excel 風格欄位篩選、
+第 12 節那套觸控手勢意圖判斷全部重寫一次，估算 3-5 週；後者這些邏輯幾乎能
+照搬，估算 1-1.5 週），選了 Capacitor。這一節記的是**這個決定在「篩選器」
+專案裡留下的唯一異動**——新增一層 HTTP API，讓手機 App 可以打；手機殼本身
+（Capacitor 專案）**不放在這裡**，是刻意拆到旁邊獨立的
+`../篩選器APP/` 資料夾，做法與理由見該專案自己的 `DEVELOPMENT_LOG.md`。
+
+**為什麼 API 只加不改**：手機 App 沒辦法像 Streamlit 一樣直接在同一個 Python
+process 裡呼叫 `ma_screener.py`，需要一個獨立跑、能被 HTTP 打到的服務。新增
+`etf_screener/api.py`（FastAPI）跟 `requirements-api.txt`（額外的
+`fastapi`/`uvicorn`，不動 `requirements.txt`，因為 Streamlit 版本身不需要
+這兩個套件），直接 import 既有的 `screen_0050`/`screen_top150`/
+`render_screen_html`/`render_screen_pdf`，跟 `app_streamlit.py` 是兩個平行的
+前端入口，共用同一套底層邏輯，沒有複製任何篩選/報告產生程式碼。
+
+**三個端點**：`GET /health`、`GET /screen/{universe}`（回傳 JSON：
+`universe_label`/`generated_at`/`as_of_date`/`total_count`/`skipped_count`/
+`html` 自包含 HTML 字串）、`GET /screen/{universe}/pdf`（回傳 PDF 二進位檔）。
+密碼保護沿用 `APP_PASSWORD` 環境變數（跟 `app_streamlit.py` 共用同一個變數
+名稱、同一套「沒設定就不擋」的邏輯），改用 `x-app-password` header 傳遞。
+
+**加了一層結果快取（`_result_cache`，TTL 10 分鐘）**：如果沒有這層，同一次
+「使用者在 App 裡先看表格、再按 PDF」的操作會觸發兩次完整的 `screen_fn()`
+（重新逐檔查價+分類）。雖然個股價格本身已經有 `cache.py` 的 4 小時 TTL 快取
+擋著、不算太貴，但兩次獨立呼叫之間如果剛好跨過價格快取過期的瞬間，會導致
+使用者在同一次操作裡看到的 HTML 表格跟 PDF 報告「資料日期」對不起來——直接
+在 API 這層把整個 `MaScreenResult` 物件快取起來，兩個端點在同一個快取視窗內
+保證用同一份底層資料。
+
+**發現並修好一個 bug（PDF 檔名含中文導致 500）**：`Content-Disposition` 這個
+HTTP header 的值規格上只能是 latin-1，`filename="0050成分股均線篩選_....pdf"`
+這種含中文字的檔名直接塞進去會在 `Response.init_headers()` 丟
+`UnicodeEncodeError`，本機測試（用真實 FinMind 資料實際打這個端點）才發現，
+不是憑空猜測。修法是同時給兩個 `Content-Disposition` 參數：ASCII 安全的
+`filename`（純英文＋日期，當作看不懂 `filename*` 語法的舊客戶端的備援）加上
+RFC 5987 語法的 `filename*=UTF-8''<percent-encoded>`（真正含中文的檔名，
+`urllib.parse.quote()` 編碼），兩者並存是這個 RFC 建議的標準寫法。
+
+**已知風險：中途下錯 `taskkill` 指令**：本機測試時用過一次
+`taskkill /F /IM python.exe /T`，這個指令沒有限定範圍，會把當下系統上**所有**
+python.exe 行程關掉，不只是測試用的 uvicorn。之後已經改成先用
+`netstat -ano | grep LISTENING` 找出正確 PID 再精準關閉那一個行程，如果之後
+還要在本機跑多個 Python 服務做測試，記得比照後者的做法，不要圖方便用
+`/IM` 整批關。
+
+## 15. 如果要繼續開發，建議先看這幾個檔案
 
 - `ma_screener.py` — 均線分級邏輯核心，加新的分級規則或新股票池大概率要碰這裡；
   也是技術分析圖表的 history 序列（K 棒/均線/KD）產生的地方
@@ -580,3 +628,6 @@ Pro Max 上實測確認（「目前已經正常了」）。
   / `chartRange` 縮放模型，以及第 12 節的觸控手勢意圖判斷邏輯，再動手修改
 - `app_streamlit.py` — 網頁介面，PC/iPhone 開啟方式的細節、側邊欄/popover 選單
   切換邏輯、iframe 高度自動調整都在這裡
+- `api.py` — 給手機 App（見第 14 節、`../篩選器APP/`）用的 HTTP API，跟
+  `app_streamlit.py` 平行的另一個前端入口，改篩選/報告邏輯本身兩邊都要留意
+  是否需要同步驗證（不需要同步改程式碼，兩邊都是直接 import 同一套底層函式）

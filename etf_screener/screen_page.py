@@ -838,7 +838,13 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
           var textW = ctx.measureText(labelText).width;
           var boxW = textW + 12, boxH = 18;
           var boxX = Math.min(Math.max(hx - boxW / 2, padLeft), cssWidth - padRight - boxW);
-          var boxY = padTop;
+          // 標籤跟著十字線的交叉點（價格高度 hy）垂直移動，不是固定在圖表
+          // 頂端——優先貼在交叉點正上方一點的位置（留 6px 間距，不直接蓋住
+          // 十字線的圓點），空間不夠（交叉點太靠近頂端）才改貼下方，並整體
+          // 限制在繪圖區內，不會超出圖表範圍。
+          var boxY = (hy - boxH - 6 >= padTop)
+            ? (hy - boxH - 6)
+            : Math.min(hy + 6, cssHeight - padBottom - boxH);
           ctx.fillStyle = 'rgba(30,30,30,0.82)';
           ctx.beginPath();
           if (ctx.roundRect) {{

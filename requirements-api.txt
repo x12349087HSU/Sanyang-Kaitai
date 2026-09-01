@@ -1,0 +1,5 @@
+# 補充 requirements.txt，不是取代——API 服務仍然需要 requests/reportlab
+# 這些既有依賴（跑 ma_screener/pdf_report），只是額外需要 fastapi/uvicorn
+# 來跑 HTTP 服務本身。安裝：pip install -r requirements.txt -r requirements-api.txt
+fastapi>=0.110
+uvicorn>=0.29
