@@ -54,27 +54,36 @@ def _twse_stock_day_url(stock_id: str, ym: date) -> str:
     )
 
 
-def _fetch_twse_month(stock_id: str, ym: date) -> list[PriceBar]:
+def _fetch_twse_month(stock_id: str, ym: date) -> list[dict]:
+    """回傳 JSON 可序列化的原始 dict（不是 PriceBar），因為這個函式的回傳值會
+    直接被 cache.cached_call() 存進磁碟快取（json.dumps）——PriceBar 是
+    dataclass，不能直接 json.dumps，之前這裡直接回傳 list[PriceBar] 存快取時
+    會整個拋出 TypeError（'Object of type PriceBar is not JSON serializable'），
+    只是因為 FinMind 平常都先成功，這個備援分支很少真的被執行到，才一直沒被
+    抓到。跟 _fetch_finmind() 的做法一致：cached_call 只存/取原始 dict，
+    PriceBar 的組裝放在 cached_call 外面。"""
     url = _twse_stock_day_url(stock_id, ym)
     resp = http_client.get(url)
     payload = resp.json()
     if payload.get("stat") != "OK":
         return []
-    bars: list[PriceBar] = []
+    rows: list[dict] = []
     for row in payload.get("data", []):
         try:
             roc_date = row[0]  # "115/08/03"
             roc_year, month, day = (int(x) for x in roc_date.split("/"))
             trade_date = date(roc_year + 1911, month, day)
-            volume = int(row[1].replace(",", ""))
-            open_ = float(row[3].replace(",", ""))
-            high = float(row[4].replace(",", ""))
-            low = float(row[5].replace(",", ""))
-            close = float(row[6].replace(",", ""))
-            bars.append(PriceBar(trade_date, open_, high, low, close, volume))
+            rows.append({
+                "trade_date": trade_date.isoformat(),
+                "open": float(row[3].replace(",", "")),
+                "high": float(row[4].replace(",", "")),
+                "low": float(row[5].replace(",", "")),
+                "close": float(row[6].replace(",", "")),
+                "volume": int(row[1].replace(",", "")),
+            })
         except (ValueError, IndexError):
             continue
-    return bars
+    return rows
 
 
 @safe_provider("TWSE OpenData (STOCK_DAY)")
@@ -87,10 +96,15 @@ def _fetch_twse_official(stock_id: str, market_type: str, months: int) -> list[P
     cursor = today.replace(day=1)
     for _ in range(months):
         key = f"price_twse:{stock_id}:{cursor.isoformat()}"
-        month_bars = cache.cached_call(
+        month_rows = cache.cached_call(
             key, config.CACHE_TTL_PRICE, lambda c=cursor: _fetch_twse_month(stock_id, c)
         )
-        all_bars.extend(month_bars)
+        for r in month_rows:
+            all_bars.append(PriceBar(
+                trade_date=date.fromisoformat(r["trade_date"]),
+                open=r["open"], high=r["high"], low=r["low"],
+                close=r["close"], volume=r["volume"],
+            ))
         # 回推一個月
         cursor = (cursor - timedelta(days=1)).replace(day=1)
     all_bars.sort(key=lambda b: b.trade_date)
