@@ -253,30 +253,37 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
        瀏覽器視窗定位，不會被 .table-wrap 的 overflow:auto 裁切——之前的版本用
        absolute 定位在 <th> 底下，當篩選結果變少、.table-wrap 高度跟著縮小時，
        面板就會被裁掉一部分，看起來像「視窗過小看不到選項」。 */
-    position: fixed; z-index: 50; width: 14rem;
+    position: fixed; z-index: 50; width: 17rem;
     background: #fff; color: #1a1a1a; border: 1px solid #ccc; border-radius: 8px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.18); padding: 0.5rem; font-weight: normal;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.18); padding: 0.6rem; font-weight: normal;
   }}
   .filter-search {{
-    width: 100%; font-size: 0.85rem; padding: 0.3rem 0.5rem; margin-bottom: 0.4rem;
+    width: 100%; font-size: 0.95rem; padding: 0.5rem 0.6rem; margin-bottom: 0.5rem;
     border: 1px solid #ccc; border-radius: 5px;
   }}
   .filter-actions {{
-    display: flex; gap: 0.5rem; padding-bottom: 0.4rem; margin-bottom: 0.4rem;
+    display: flex; gap: 0.5rem; padding-bottom: 0.5rem; margin-bottom: 0.5rem;
     border-bottom: 1px solid #eee;
   }}
   .filter-actions button {{
-    flex: 1; font-size: 0.78rem; padding: 0.25rem 0.4rem; border-radius: 5px;
+    flex: 1; font-size: 0.85rem; padding: 0.45rem 0.5rem; border-radius: 5px;
     border: 1px solid #ccc; background: #f5f5f5; color: #444; cursor: pointer;
   }}
-  .filter-options {{ max-height: 12rem; overflow-y: auto; }}
+  .filter-options {{ max-height: 16rem; overflow-y: auto; }}
   .filter-options label {{
-    display: block; font-size: 0.82rem; padding: 0.15rem 0; white-space: nowrap;
+    display: flex; align-items: center; gap: 0.5rem;
+    font-size: 0.95rem; padding: 0.55rem 0.3rem; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis;
   }}
-  /* 這條規則的優先權要蓋過上面那條 .filter-options label 的 display:block，
+  /* 核取方塊本身放大：預設瀏覽器內建大小在手機上點起來太小、容易點歪，
+     這裡直接放大方塊本身（而不是只放大文字/行高），跟旁邊的文字用
+     .filter-options label 的 flex + gap 對齊，不會因為方塊變大而跑版。 */
+  .filter-options input[type="checkbox"] {{
+    width: 1.2rem; height: 1.2rem; flex-shrink: 0; margin: 0;
+  }}
+  /* 這條規則的優先權要蓋過上面那條 .filter-options label 的 display:flex，
      不然搜尋框把不符合的 label 設成 hidden 時，畫面上其實不會真的消失
-     （被上面那條規則的 display:block 蓋掉了），看起來就像搜尋沒有生效。 */
+     （被上面那條規則的 display 蓋掉了），看起來就像搜尋沒有生效。 */
   .filter-options label[hidden] {{ display: none; }}
   td {{ padding: 0.4rem 0.6rem; border-bottom: 1px solid #eee; white-space: nowrap; }}
   td.num {{ text-align: right; }}
