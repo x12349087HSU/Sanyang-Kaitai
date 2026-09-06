@@ -30,6 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from etf_screener import config
+from etf_screener.fundamentals_pdf import render_fundamentals_pdf
 from etf_screener.ma_screener import screen_stocks
 from etf_screener.screen_page import render_screen_html
 
@@ -245,6 +246,35 @@ def fundamentals(stock_id: str, x_app_password: str | None = Header(default=None
     if summary is None:
         raise HTTPException(status_code=404, detail=f"查無此股票的基本面資料: {stock_id}")
     return summary
+
+
+@app.get("/fundamentals/{stock_id}/pdf")
+def fundamentals_pdf(stock_id: str, x_app_password: str | None = Header(default=None)) -> Response:
+    """即時把基本面摘要組成 PDF，不預先產生也不儲存（見
+    fundamentals_pdf.py 檔頭說明）——摘要資料本身已經是 GitHub 上的現成
+    資料，這裡只是本地排版，不呼叫任何外部資料源。"""
+    _check_password(x_app_password)
+    index = _fetch_fundamentals_index()
+    summary = index.get(stock_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"查無此股票的基本面資料: {stock_id}")
+
+    pdf_bytes = render_fundamentals_pdf(summary)
+    company_name = summary["company_name"]
+    generated_at = summary["generated_at"]
+    filename = f"{company_name}基本面摘要_{generated_at}.pdf"
+    ascii_fallback = f"{stock_id}_fundamentals_{generated_at}.pdf"
+    encoded_filename = quote(filename)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{ascii_fallback}"; '
+                f"filename*=UTF-8''{encoded_filename}"
+            )
+        },
+    )
 
 
 @app.get("/screen/stock/{query}")

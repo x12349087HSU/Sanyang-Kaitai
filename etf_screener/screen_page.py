@@ -488,6 +488,7 @@ def render_screen_html(
   <div id="fundamentalsView" class="chart-view" hidden>
     <div class="chart-header">
       <button type="button" class="chart-back-btn fund-back-btn">← 返回篩選結果</button>
+      <button type="button" class="chart-mode-btn fund-pdf-btn" id="fundPdfBtn" hidden>📄 下載 PDF</button>
       <span class="chart-title" id="fundStockLabel"></span>
     </div>
     <div id="fundBody"></div>
@@ -1081,12 +1082,20 @@ def render_screen_html(
       document.getElementById('fundBody').innerHTML = html;
     }}
 
+    var currentFundStockId = null;
+
     function openFundamentals(stockId, name) {{
+      currentFundStockId = stockId;
       document.getElementById('fundStockLabel').textContent = (name || '') + '（' + stockId + '）';
       document.getElementById('tableView').hidden = true;
       document.getElementById('fundamentalsView').hidden = false;
       var body = document.getElementById('fundBody');
+      var pdfBtn = document.getElementById('fundPdfBtn');
       var apiBase = window.__MA_APP_API_BASE__;
+      // PDF 下載跟基本面摘要本身共用同一個「有沒有被 App 殼注入」的判斷：
+      // 獨立下載的 HTML／Streamlit 內嵌情境下兩者都不支援，優雅降級成
+      // 直接隱藏這顆按鈕，不是顯示了卻點下去噴錯。
+      pdfBtn.hidden = !apiBase;
       if (!apiBase) {{
         body.innerHTML = '<p class="fund-empty">此檢視模式尚不支援查看基本面資料，請在「篩選器APP」內開啟。</p>';
         resizeFrame();
@@ -1115,7 +1124,47 @@ def render_screen_html(
     function closeFundamentals() {{
       document.getElementById('fundamentalsView').hidden = true;
       document.getElementById('tableView').hidden = false;
+      currentFundStockId = null;
       resizeFrame();
+    }}
+
+    // 下載基本面摘要 PDF：跟均線篩選 PDF（app.js 的 openPdf()）同一套已驗證
+    // 手法——Blob URL + window.open()，失敗時退回 Web Share API，不用
+    // data: URI（會被防釣魚機制擋下）也不用 <a download>（iPhone Safari
+    // 常改觸發 Quick Look）。這裡是獨立實作一份而不是呼叫 app.js 的
+    // openPdf()，因為這個按鈕在 iframe 內部（screen_page.py 自己的
+    // script），跟 app.js 是不同的 JS 執行環境，沒辦法直接共用函式。
+    function downloadFundamentalsPdf(stockId) {{
+      var apiBase = window.__MA_APP_API_BASE__;
+      if (!apiBase) return;
+      var headers = {{}};
+      if (window.__MA_APP_API_PASSWORD__) headers['x-app-password'] = window.__MA_APP_API_PASSWORD__;
+      var btn = document.getElementById('fundPdfBtn');
+      var originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '產生中...';
+      fetch(apiBase + '/fundamentals/' + encodeURIComponent(stockId) + '/pdf', {{ headers: headers }})
+        .then(function (resp) {{
+          if (!resp.ok) throw new Error('PDF 產生失敗：API 回應 HTTP ' + resp.status);
+          return resp.blob();
+        }})
+        .then(function (blob) {{
+          var blobUrl = URL.createObjectURL(blob);
+          var opened = window.open(blobUrl, '_blank');
+          if (!opened && navigator.share) {{
+            var file = new File([blob], stockId + '_基本面摘要.pdf', {{ type: 'application/pdf' }});
+            if (navigator.canShare && navigator.canShare({{ files: [file] }})) {{
+              navigator.share({{ files: [file] }});
+            }}
+          }}
+        }})
+        .catch(function (err) {{
+          alert(err.message);
+        }})
+        .finally(function () {{
+          btn.disabled = false;
+          btn.textContent = originalText;
+        }});
     }}
 
     document.querySelectorAll('.price-link').forEach(function (el) {{
@@ -1130,6 +1179,9 @@ def render_screen_html(
       }});
     }});
     document.querySelector('.fund-back-btn').addEventListener('click', closeFundamentals);
+    document.getElementById('fundPdfBtn').addEventListener('click', function () {{
+      if (currentFundStockId) downloadFundamentalsPdf(currentFundStockId);
+    }});
 
     // 圖例點下去切換該條線顯示/隱藏；K、D 都關掉時 renderChart() 裡會自動
     // 把整個 KD 子圖藏起來（見 kdOn 判斷），不需要在這裡另外處理。

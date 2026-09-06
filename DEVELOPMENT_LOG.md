@@ -873,6 +873,66 @@ Render 只讀現成資料」原則衝突——任一股票的範圍是全部上�
 endpoint，這裡靠 `currentUniverse` 是否為 `null` 決定要不要顯示
 `pdfBtn`，避免使用者點了卻噴 404。
 
+## 14.6 基本面摘要新增下載 PDF：即時產生、不預先產生也不儲存
+
+使用者要求在基本面摘要畫面（「← 返回篩選結果」跟股票名稱中間）加一個
+下載 PDF 的按鈕。實作前先用真實資料做了一個原型測試，量出兩種做法的
+資料量差異，再決定怎麼做：
+
+- **方案 A（比照均線篩選 PDF，每天排程幫 150 檔都預先產生好）**：實測
+  單一檔的基本面摘要 PDF 約 106-126 KB（平均 117 KB），對照 0050.pdf
+  （50 檔完整表格）也才 156 KB、top150.pdf（150 檔）208 KB，可以看出
+  **PDF 檔案的體積主要是中文字型嵌入的固定成本（100KB+），不是內容本身**
+  ——150 檔各自嵌入一次同樣的字型，會膨脹到 17.5MB+，比現在整個
+  `data/` 資料夾（3.4MB）大 5 倍以上，效率很差。
+- **方案 B（採用）：Render 收到請求時才即時產生，完全不儲存**：基本面
+  摘要的文字資料本來就已經在 GitHub 上了（`data/fundamentals.json`），
+  把這份現成資料組成 PDF 是純本地排版，**不需要再打 FinMind/證交所**，
+  跟 14.5 節「直接篩選個股」是同一種「查完即丟」精神，但比那個更單純
+  （那個還要即時查外部資料源，這個只是格式轉換）。代價是使用者按下載
+  時要等 Render 現場組版（約 1-2 秒），換來零額外儲存空間。
+
+**新增 `etf_screener/fundamentals_pdf.py`**：`render_fundamentals_pdf(summary)`，
+重用 `fonts.py` 的 `register_cjk_fonts()`，內容比照 `/fundamentals/{stock_id}`
+回傳的欄位（營收/EPS 摘要文字、自檢表、目標價評等）組版，不含股價圖/
+本益比河流圖/新聞（那些是 `tw_stock_report.generate_report()` 的範圍，
+這裡刻意只做「簡化摘要」的 PDF 版本，跟網頁版範圍一致）。
+
+**`api.py` 新增 `GET /fundamentals/{stock_id}/pdf`**：查 `_fetch_fundamentals_index()`
+拿到摘要 dict（查無資料回 404，邏輯跟 `/fundamentals/{stock_id}` 一致），
+呼叫 `render_fundamentals_pdf()` 即時組版後直接回傳，PDF 檔名處理沿用
+既有的 RFC 5987 雙檔名寫法（ASCII 備援 + UTF-8 percent-encode）。
+
+**`screen_page.py`**：`fundamentalsView` 的 `.chart-header` 在「← 返回
+篩選結果」跟股票名稱中間插入 `#fundPdfBtn`（重用 `.chart-mode-btn`
+樣式），預設 `hidden`，`openFundamentals()` 裡跟基本面摘要本身共用同一個
+「有沒有被 App 殼注入 `window.__MA_APP_API_BASE__`」的判斷來決定要不要
+顯示——獨立下載的 HTML／Streamlit 內嵌情境下這顆按鈕也不會出現。下載
+邏輯（`downloadFundamentalsPdf()`）獨立實作一份 Blob URL + `window.open()`
+（失敗退回 Web Share API），跟 `app.js` 的 `openPdf()` 是同一套已驗證
+手法，但因為這顆按鈕在 iframe 內部（`screen_page.py` 自己的 script），
+跟 app.js 是不同的 JS 執行環境，沒辦法直接呼叫共用函式，只能各自實作
+一份。
+
+## 14.7 教訓：改到 `screen_page.py` 之後，記得重新產生 0050/top150 的預抓資料
+
+使用者回報「0050/top150 篩選結果點股票名字沒反應，只有直接篩選個股才
+成功」，追查後發現不是程式碼的 bug：`data/0050.json`／`data/top150.json`
+是**排程預先算好、存進 GitHub 的現成 HTML**（見 14.3 節），而這份 HTML
+是用「當時」的 `screen_page.py` 產生的——加了 `.name-link`／
+`fundamentalsView` 之後，只改了程式碼本身，**沒有重新跑一次
+`prefetch_and_publish.py`**，導致 GitHub 上那份 HTML 還停在舊版本，
+完全沒有基本面按鈕。「直接篩選個股」沒這個問題，是因為那條路是即時用
+當下最新的 `screen_page.py` 產生 HTML，不受這個問題影響。
+
+**教訓**：`0050.json`／`top150.json` 這兩份預先算好的資料，本質上是
+`screen_page.py`（跟 `ma_screener.py`）在某個時間點的「快照」，**改完
+任何會影響這份 HTML 呈現的程式碼之後，都要記得手動重跑一次
+`scripts/prefetch_and_publish.py` 才會反映到 Render 上**，改程式碼本身
+不會自動觸發重新產生。日常排程本來就會每天自動重跑一次、隔天會自然
+更新，但如果像這次一樣「改完程式碼想馬上看到效果」，必須手動跑一次，
+不能只靠等下一次排程。
+
 ## 15. 如果要繼續開發，建議先看這幾個檔案
 
 - `ma_screener.py` — 均線分級邏輯核心，加新的分級規則或新股票池大概率要碰這裡；
