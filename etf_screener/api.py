@@ -30,6 +30,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from etf_screener import config
+from etf_screener.ma_screener import screen_stocks
+from etf_screener.screen_page import render_screen_html
 
 _UNIVERSE_LABELS = {
     "0050": "0050 成分股",
@@ -74,6 +76,94 @@ def _fetch_universe_pdf(universe: str) -> bytes:
             detail="PDF 尚未就緒，請稍後再試（排程結果還沒推送成功，或暫時連不到 GitHub）",
         ) from exc
     return response.content
+
+
+# data/fundamentals.json 是一整份「所有股票的基本面摘要」（見
+# ../scripts/prefetch_fundamentals.py），跟 _payload_cache 分開存，因為這裡
+# 快取的 key 是整份檔案本身，不是個別 universe。
+_fundamentals_cache: tuple[float, dict] | None = None
+
+
+def _fetch_fundamentals_index() -> dict:
+    global _fundamentals_cache
+    if _fundamentals_cache is not None:
+        cached_at, cached_index = _fundamentals_cache
+        if time.time() - cached_at <= config.DATA_FETCH_TTL_SECONDS:
+            return cached_index
+
+    url = f"{config.DATA_RAW_BASE}/fundamentals.json"
+    try:
+        response = requests.get(url, timeout=config.HTTP_TIMEOUT_SECONDS)
+        response.raise_for_status()
+        index = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="基本面資料尚未就緒，請稍後再試（排程結果還沒推送成功，或暫時連不到 GitHub）",
+        ) from exc
+
+    _fundamentals_cache = (time.time(), index)
+    return index
+
+
+# data/stock_index.json 是完整上市櫃公司代號/名稱/別名清單（見
+# ../scripts/prefetch_stock_index.py），給「直接篩選個股」用來把使用者輸入
+# 的代號/名稱解析成確切的 (stock_id, company_name)，這一步本身不呼叫
+# FinMind，只在查表；查到之後才即時查該檔股價（見 screen_stock()）。
+_stock_index_cache: tuple[float, list[dict]] | None = None
+
+
+def _fetch_stock_index() -> list[dict]:
+    global _stock_index_cache
+    if _stock_index_cache is not None:
+        cached_at, cached_index = _stock_index_cache
+        if time.time() - cached_at <= config.DATA_FETCH_TTL_SECONDS:
+            return cached_index
+
+    url = f"{config.DATA_RAW_BASE}/stock_index.json"
+    try:
+        response = requests.get(url, timeout=config.HTTP_TIMEOUT_SECONDS)
+        response.raise_for_status()
+        index = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="股票清單尚未就緒，請稍後再試（排程結果還沒推送成功，或暫時連不到 GitHub）",
+        ) from exc
+
+    _stock_index_cache = (time.time(), index)
+    return index
+
+
+def _resolve_stock(query: str, index: list[dict]) -> tuple[str, str] | None:
+    """把使用者輸入的代號/名稱解析成 (stock_id, company_name)，比對順序
+    跟 ../../公司基本面分析/tw_stock_report/identity.py 的 resolve() 一致：
+    代號完全相符 > 名稱完全相符 > 名稱包含 > 別名完全相符 > 別名包含。
+    這裡只是在既有清單裡查表（無網路請求），不是重新實作該檔案對 FinMind
+    的呼叫。"""
+    query = (query or "").strip()
+    if not query:
+        return None
+
+    if query.isdigit():
+        for entry in index:
+            if entry["stock_id"] == query:
+                return entry["stock_id"], entry["company_name"]
+        return None
+
+    for entry in index:
+        if entry["company_name"] == query:
+            return entry["stock_id"], entry["company_name"]
+    for entry in index:
+        if query in entry["company_name"]:
+            return entry["stock_id"], entry["company_name"]
+    for entry in index:
+        if query in entry.get("aliases", []):
+            return entry["stock_id"], entry["company_name"]
+    for entry in index:
+        if any(query in alias for alias in entry.get("aliases", [])):
+            return entry["stock_id"], entry["company_name"]
+    return None
 
 
 def _get_configured_password() -> str | None:
@@ -145,3 +235,48 @@ def screen_pdf(universe: str, x_app_password: str | None = Header(default=None))
             )
         },
     )
+
+
+@app.get("/fundamentals/{stock_id}")
+def fundamentals(stock_id: str, x_app_password: str | None = Header(default=None)) -> dict:
+    _check_password(x_app_password)
+    index = _fetch_fundamentals_index()
+    summary = index.get(stock_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"查無此股票的基本面資料: {stock_id}")
+    return summary
+
+
+@app.get("/screen/stock/{query}")
+def screen_stock(query: str, x_app_password: str | None = Header(default=None)) -> dict:
+    """直接篩選個股：代號/名稱不限於 0050+0051 這個排程預抓的股票池，
+    所以無法比照 /screen/{universe} 讀現成資料——**這是這個 API 唯一即時
+    呼叫 FinMind/證交所的地方**。股價有證交所官方備援、單一檔請求量低，
+    預期大部分時候能透過備援成功（見 DEVELOPMENT_LOG 相關章節）；基本面
+    摘要沒有這種豁免，只有剛好也在 150 檔池子裡的股票查得到（走既有的
+    /fundamentals/{stock_id} 404 優雅降級，不需要在這裡特別處理）。"""
+    _check_password(x_app_password)
+    index = _fetch_stock_index()
+    resolved = _resolve_stock(query, index)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail=f"查無股票「{query}」，請確認代號或名稱是否正確")
+    stock_id, company_name = resolved
+
+    result = screen_stocks([(stock_id, company_name)])
+    if not result.rows:
+        reason = result.skipped[0][2] if result.skipped else "查詢失敗"
+        raise HTTPException(
+            status_code=503,
+            detail=f"「{company_name}（{stock_id}）」目前查不到股價資料，請稍後再試：{reason}",
+        )
+
+    html = render_screen_html(result, universe_label=company_name, include_neutral_tier=True)
+    return {
+        "universe": f"stock:{stock_id}",
+        "universe_label": company_name,
+        "generated_at": result.generated_at.isoformat(),
+        "as_of_date": result.as_of_date.isoformat() if result.as_of_date else None,
+        "total_count": len(result.rows) + len(result.skipped),
+        "skipped_count": len(result.skipped),
+        "html": html,
+    }

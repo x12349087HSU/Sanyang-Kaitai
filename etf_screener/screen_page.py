@@ -25,6 +25,7 @@ _TIER_ACCENT = {
     -2: "#6f9650",
     -3: "#4f7a37",
     -4: "#2f5a1f",
+    0: "#888888",  # 中性灰：多空訊號不一致，跟多頭紅/空頭綠區隔開
 }
 
 # (欄位 key, 表頭文字)。key 要跟 _row_attrs() 回傳的 dict key 一致，且必須是
@@ -111,7 +112,9 @@ def _table_body_html(ordered_rows: list[tuple[int, object]]) -> str:
         rows_html.append(f"""<tr {data_attrs}>
           <td><span class="tier-badge" style="--accent:{_TIER_ACCENT[tier]}">{attrs['tier']}</span></td>
           <td>{html_lib.escape(attrs['stock-id'])}</td>
-          <td>{html_lib.escape(attrs['name'])}</td>
+          <td><button type="button" class="name-link"
+            data-stock-id="{html_lib.escape(r.stock_id)}"
+            data-name="{html_lib.escape(r.company_name)}">{html_lib.escape(attrs['name'])}</button></td>
           <td class="num"><button type="button" class="price-link"
             data-stock-id="{html_lib.escape(r.stock_id)}"
             data-name="{html_lib.escape(r.company_name)}">{html_lib.escape(attrs['close'])}</button></td>
@@ -148,11 +151,22 @@ def _skipped_html(skipped: list[tuple[str, str, str]]) -> str:
     </details>"""
 
 
-def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 成分股") -> str:
+def render_screen_html(
+    result: MaScreenResult,
+    *,
+    universe_label: str = "0050 成分股",
+    include_neutral_tier: bool = False,
+) -> str:
     title = f"{universe_label}均線篩選"
 
+    # 批次篩選（0050/top150）刻意只顯示 TIER_ORDER 這八個有明確訊號的分類，
+    # tier 0（多空訊號不一致）被排除在外，避免結果表格塞滿沒有訊號意義的
+    # 個股。但「直接篩選個股」查詢單一檔時，就算剛好落在 tier 0，使用者也
+    # 需要看到查詢結果，不能顯示成「查無符合條件的個股」，這裡用一個參數
+    # 開關，不影響既有兩個 universe 的呼叫端。
+    tiers_to_render: tuple[int, ...] = TIER_ORDER + ((0,) if include_neutral_tier else ())
     ordered_rows: list[tuple[int, object]] = [
-        (tier, r) for tier in TIER_ORDER for r in result.rows_by_tier(tier)
+        (tier, r) for tier in tiers_to_render for r in result.rows_by_tier(tier)
     ]
     col_keys = [col for col, _ in _COLUMNS]
 
@@ -301,6 +315,14 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
     font: inherit; font-size: inherit;
   }}
   .price-link:hover {{ color: #0d3a91; }}
+  /* 股票名字點下去可以看基本面摘要，跟 .price-link 同一套「按鈕偽裝成連結
+     文字」寫法，保留鍵盤可操作性。 */
+  .name-link {{
+    cursor: pointer; color: #1a54c4; text-decoration: underline dotted;
+    text-underline-offset: 2px; background: none; border: none; padding: 0;
+    font: inherit; font-size: inherit; text-align: left;
+  }}
+  .name-link:hover {{ color: #0d3a91; }}
   .chart-view {{
     background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
     padding: 0.9rem;
@@ -389,6 +411,30 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
     table {{ font-size: 0.78rem; }}
     td {{ padding: 0.3rem 0.4rem; }}
   }}
+  /* 基本面摘要畫面：跟 .chart-view 共用外層卡片樣式，內容本身是文字/清單
+     （不是圖表），另外加幾條專屬樣式。 */
+  .fund-section {{ margin-top: 1rem; }}
+  .fund-section h3 {{
+    font-size: 0.92rem; margin: 0 0 0.4rem; color: #7a1414; border-bottom: 1px solid #eee;
+    padding-bottom: 0.3rem;
+  }}
+  .fund-text {{ font-size: 0.86rem; line-height: 1.7; color: #333; }}
+  .fund-tier-group {{ margin-bottom: 0.7rem; }}
+  .fund-tier-group h4 {{ font-size: 0.8rem; color: #555; margin: 0 0 0.3rem; }}
+  .fund-checklist-item {{
+    display: flex; gap: 0.5rem; align-items: flex-start; font-size: 0.84rem;
+    line-height: 1.6; padding: 0.25rem 0; border-bottom: 1px dashed #eee;
+  }}
+  .fund-checklist-icon {{ flex-shrink: 0; font-weight: 700; }}
+  .fund-checklist-icon.pass {{ color: #1e8449; }}
+  .fund-checklist-icon.fail {{ color: #c0392b; }}
+  .fund-checklist-icon.unknown {{ color: #999; }}
+  .fund-checklist-detail {{ color: #777; font-size: 0.78rem; }}
+  .fund-rating-item {{
+    font-size: 0.84rem; line-height: 1.6; padding: 0.3rem 0; border-bottom: 1px dashed #eee;
+  }}
+  .fund-empty {{ color: #888; font-size: 0.84rem; }}
+  .fund-meta {{ font-size: 0.76rem; color: #999; margin-top: 0.8rem; text-align: center; }}
 </style>
 </head>
 <body>
@@ -438,6 +484,13 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
       該日各數值；兩指縮放（手機）或滾輪（滑鼠）可以放大/縮小時間區間，
       非投資建議。
     </p>
+  </div>
+  <div id="fundamentalsView" class="chart-view" hidden>
+    <div class="chart-header">
+      <button type="button" class="chart-back-btn fund-back-btn">← 返回篩選結果</button>
+      <span class="chart-title" id="fundStockLabel"></span>
+    </div>
+    <div id="fundBody"></div>
   </div>
   <script>
     // 每個欄位維護一組「目前勾選中的值」集合，加上一個「目前搜尋框內容」
@@ -965,12 +1018,118 @@ def render_screen_html(result: MaScreenResult, *, universe_label: str = "0050 �
       resizeFrame();
     }}
 
+    // 基本面摘要：跟 K 線圖一樣是 tableView <-> 另一個 view 的整頁切換，
+    // 差別是這裡的資料不是隨篩選結果一起嵌入的（基本面資料跟均線篩選是
+    // 兩個不同專案、不同排程來源，見 ../../篩選器APP/DEVELOPMENT_LOG.md），
+    // 需要另外打 API。API 網址／密碼是「篩選器APP」的 app.js 在使用者自己
+    // 瀏覽器裡用 patchResultHtmlForAppShell() 注入的全域變數（見該檔案），
+    // 不存在代表目前是獨立下載 HTML／Streamlit 內嵌等其他情境，優雅降級
+    // 顯示提示文字，不噴錯。
+    function _fundEscape(s) {{
+      var div = document.createElement('div');
+      div.textContent = s == null ? '' : String(s);
+      return div.innerHTML;
+    }}
+
+    function _fundChecklistHtml(items) {{
+      var byTier = {{}};
+      var tierOrder = [];
+      (items || []).forEach(function (item) {{
+        if (!byTier[item.tier]) {{ byTier[item.tier] = []; tierOrder.push(item.tier); }}
+        byTier[item.tier].push(item);
+      }});
+      if (!tierOrder.length) return '<p class="fund-empty">無自檢表資料。</p>';
+      var html = '';
+      tierOrder.forEach(function (tier) {{
+        var groupItems = byTier[tier];
+        html += '<div class="fund-tier-group"><h4>' + _fundEscape(groupItems[0].tier_name) + '</h4>';
+        groupItems.forEach(function (item) {{
+          var iconClass = item.passed === true ? 'pass' : (item.passed === false ? 'fail' : 'unknown');
+          var icon = item.passed === true ? '✓' : (item.passed === false ? '✗' : '？');
+          html += '<div class="fund-checklist-item"><span class="fund-checklist-icon ' + iconClass + '">' + icon + '</span>' +
+            '<span>' + _fundEscape(item.name) + '<br><span class="fund-checklist-detail">' + _fundEscape(item.detail) + '</span></span></div>';
+        }});
+        html += '</div>';
+      }});
+      return html;
+    }}
+
+    function _fundRatingsHtml(ratings) {{
+      if (!ratings || !ratings.length) {{
+        return '<p class="fund-empty">查無一致公開資料，僅整理公開可得資訊。</p>';
+      }}
+      return ratings.map(function (r) {{
+        var parts = [];
+        if (r.institution) parts.push(r.institution);
+        if (r.rating) parts.push(r.rating);
+        if (r.target_price != null) parts.push('目標價 ' + r.target_price + ' 元');
+        var head = parts.length ? parts.join('・') : '（無法辨識評等內容）';
+        return '<div class="fund-rating-item"><strong>' + _fundEscape(head) + '</strong><br>' +
+          _fundEscape(r.source_title) + (r.publish_date ? '（' + _fundEscape(r.publish_date) + '）' : '') + '</div>';
+      }}).join('');
+    }}
+
+    function renderFundamentals(data) {{
+      var html = '';
+      html += '<div class="fund-section"><h3>營收趨勢</h3><p class="fund-text">' +
+        (data.revenue_summary_text ? _fundEscape(data.revenue_summary_text) : '<span class="fund-empty">查無月營收資料。</span>') + '</p></div>';
+      html += '<div class="fund-section"><h3>EPS 趨勢</h3><p class="fund-text">' +
+        (data.eps_summary_text ? _fundEscape(data.eps_summary_text) : '<span class="fund-empty">查無 EPS 資料。</span>') + '</p></div>';
+      html += '<div class="fund-section"><h3>基本面自檢表</h3>' + _fundChecklistHtml(data.checklist_items) + '</div>';
+      html += '<div class="fund-section"><h3>目標價／評等</h3>' + _fundRatingsHtml(data.ratings) + '</div>';
+      html += '<p class="fund-meta">資料日期：' + _fundEscape(data.generated_at) + '（來源：公開資訊，非投資建議）</p>';
+      document.getElementById('fundBody').innerHTML = html;
+    }}
+
+    function openFundamentals(stockId, name) {{
+      document.getElementById('fundStockLabel').textContent = (name || '') + '（' + stockId + '）';
+      document.getElementById('tableView').hidden = true;
+      document.getElementById('fundamentalsView').hidden = false;
+      var body = document.getElementById('fundBody');
+      var apiBase = window.__MA_APP_API_BASE__;
+      if (!apiBase) {{
+        body.innerHTML = '<p class="fund-empty">此檢視模式尚不支援查看基本面資料，請在「篩選器APP」內開啟。</p>';
+        resizeFrame();
+        return;
+      }}
+      body.innerHTML = '<p class="fund-empty">正在查詢基本面資料...</p>';
+      resizeFrame();
+      var headers = {{}};
+      if (window.__MA_APP_API_PASSWORD__) headers['x-app-password'] = window.__MA_APP_API_PASSWORD__;
+      fetch(apiBase + '/fundamentals/' + encodeURIComponent(stockId), {{ headers: headers }})
+        .then(function (resp) {{
+          if (resp.status === 404) throw new Error('查無此股票的基本面資料。');
+          if (!resp.ok) throw new Error('查詢失敗：API 回應 HTTP ' + resp.status + '。');
+          return resp.json();
+        }})
+        .then(function (data) {{
+          renderFundamentals(data);
+          resizeFrame();
+        }})
+        .catch(function (err) {{
+          body.innerHTML = '<p class="fund-empty">' + _fundEscape(err.message) + '</p>';
+          resizeFrame();
+        }});
+    }}
+
+    function closeFundamentals() {{
+      document.getElementById('fundamentalsView').hidden = true;
+      document.getElementById('tableView').hidden = false;
+      resizeFrame();
+    }}
+
     document.querySelectorAll('.price-link').forEach(function (el) {{
       el.addEventListener('click', function () {{
         openChart(el.getAttribute('data-stock-id'), el.getAttribute('data-name'));
       }});
     }});
     document.querySelector('.chart-back-btn').addEventListener('click', closeChart);
+    document.querySelectorAll('.name-link').forEach(function (el) {{
+      el.addEventListener('click', function () {{
+        openFundamentals(el.getAttribute('data-stock-id'), el.getAttribute('data-name'));
+      }});
+    }});
+    document.querySelector('.fund-back-btn').addEventListener('click', closeFundamentals);
 
     // 圖例點下去切換該條線顯示/隱藏；K、D 都關掉時 renderChart() 裡會自動
     // 把整個 KD 子圖藏起來（見 kdOn 判斷），不需要在這裡另外處理。

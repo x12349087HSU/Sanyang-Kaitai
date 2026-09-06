@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -21,6 +20,7 @@ from etf_screener import config
 from etf_screener.ma_screener import MaScreenResult, screen_0050, screen_top150
 from etf_screener.pdf_report import render_screen_pdf
 from etf_screener.screen_page import render_screen_html
+from _git_publish import publish_to_git
 
 _UNIVERSES = {
     "0050": ("0050 成分股", screen_0050),
@@ -43,41 +43,6 @@ def _build_payload(universe: str, universe_label: str, result: MaScreenResult) -
     }
 
 
-def _run_git(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *args],
-        cwd=_PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-
-
-def _publish_to_git(generated_at: str) -> bool:
-    """git add + commit + push data/。回傳是否真的有新 commit（沒有變化就
-    跳過 commit/push，避免產生空 commit）。任何一步失敗會拋出例外，讓
-    main() 印出清楚錯誤並回傳非 0 exit code。"""
-    add_result = _run_git("add", "data/")
-    if add_result.returncode != 0:
-        raise RuntimeError(f"git add 失敗：{add_result.stderr}")
-
-    diff_result = _run_git("diff", "--cached", "--quiet")
-    if diff_result.returncode == 0:
-        print("資料跟上次推送的內容一模一樣，跳過 commit/push。")
-        return False
-
-    commit_message = f"排程更新篩選結果資料（{generated_at}）"
-    commit_result = _run_git("commit", "-m", commit_message)
-    if commit_result.returncode != 0:
-        raise RuntimeError(f"git commit 失敗：{commit_result.stderr}")
-
-    push_result = _run_git("push")
-    if push_result.returncode != 0:
-        raise RuntimeError(f"git push 失敗：{push_result.stderr}")
-
-    return True
-
-
 def main() -> int:
     generated_at = ""
 
@@ -98,7 +63,7 @@ def main() -> int:
         print(f"  已寫入 {pdf_path}")
 
     try:
-        pushed = _publish_to_git(generated_at)
+        pushed = publish_to_git(["data/"], f"排程更新篩選結果資料（{generated_at}）")
     except RuntimeError as exc:
         print(f"推送到 GitHub 失敗：{exc}")
         return 1
@@ -106,6 +71,8 @@ def main() -> int:
     if pushed:
         print("已成功 commit 並 push 到 GitHub，Render API 最多 "
               f"{config.DATA_FETCH_TTL_SECONDS // 60} 分鐘內會讀到新資料。")
+    else:
+        print("資料跟上次推送的內容一模一樣，跳過 commit/push。")
     return 0
 
 

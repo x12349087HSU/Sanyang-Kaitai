@@ -680,8 +680,9 @@ API（`etf_screener/api.py`）部署到 Render 之後，使用者實際在手機
 
 ## 14.2 尚未解決：FinMind 與證交所似乎都會封鎖 Render 這類雲端主機的 IP
 
-**這是目前最大的未解問題，使用者還在考慮怎麼處理，之後接續開發前務必先
-確認狀態有沒有變。**
+**（2026-09-04 已解決，見第 14.3 節）** 使用者最終選了本節列出的「排程預抓
+資料、推上 GitHub，Render 只供應現成結果」方向，已經實作並驗證成功。以下
+保留原始診斷過程的完整記錄。
 
 修好 14.1 那兩個 bug 之後，50 檔（0050）的篩選結果變好看了，但使用者用
 「上市市值前 150 大」（150 檔）實際測試時，回報又讀取很久，追查發現
@@ -735,6 +736,143 @@ exchangeReport/STOCK_DAY` 回傳 **428 Client Error**（伺服器主動拒絕，
 也一樣被擋，代表問題範圍更大，牽涉到現有正式網頁版的可用性，不只是這次
 新增的手機 App。之後排查這個問題時應該先確認這件事。
 
+## 14.3 解法：家裡電腦排程預抓資料、推上 GitHub，Render 只讀現成結果
+
+使用者最終選了 14.2 節列出的最後一個方向。實作內容：
+
+- **新增 `scripts/prefetch_and_publish.py`**：本機排程呼叫既有的
+  `screen_0050()`/`screen_top150()`，把結果（跟 `api.py` 原本
+  `/screen/{universe}` 回傳完全相同 schema 的 JSON，外加 PDF 位元組）寫進
+  `data/{universe}.json`／`data/{universe}.pdf`，`git add`/`commit`/`push`
+  到這個 repo（沒有變化就跳過 commit，避免空 commit）。
+- **`api.py` 改成不再自己算**：拿掉 `screen_0050`/`screen_top150`/
+  `render_screen_html`/`render_screen_pdf` 的即時呼叫，改成
+  `_fetch_universe_payload()`/`_fetch_universe_pdf()` 向
+  `raw.githubusercontent.com` 抓現成的 `data/{universe}.json`／`.pdf`，
+  記憶體快取 TTL 15 分鐘（`config.DATA_FETCH_TTL_SECONDS`）避免短時間內
+  重複打 GitHub。App 端回傳格式完全不變，`篩選器APP` 不用改一行。
+- **為什麼用「執行期跟 GitHub raw 拿資料」而不是「靠 push 觸發 Render
+  重新部署」**：Render 本來就有 GitHub push 自動部署，資料檔案理論上也能
+  跟著程式碼一起包進部署——但那樣資料更新跟程式碼部署會綁在一起（資料
+  一天更新一次，不需要每次都跑一次完整 build），刻意拆開兩者，資料更新
+  純粹是「多打一次 GitHub raw content」，不影響部署管線。
+- **排程本身**：Windows 工作排程器，平日 15:30 觸發
+  `run_prefetch.bat`（`.venv` 啟用 + 跑腳本 + 輸出附加寫進
+  `logs/prefetch.log`）。**踩過一個坑**：`schtasks /Create /TR` 的路徑
+  裡如果有空白（這台電腦的使用者資料夾是 `Windows 11`，中間有空白），
+  就算整個路徑包雙引號，`schtasks` 還是會在顯示/儲存時把它從空白處切成
+  「Command」+「Arguments」兩截，導致找不到檔案。**解法是用 8.3 短路徑**
+  （`C:\Users\WINDOW~1\...`）取代含空白的完整路徑，從根本避開這個
+  解析問題，不要浪費時間在跟 schtasks 的引號規則搏鬥。
+- 排程設定成「只在使用者登入時執行」（`schtasks` 的預設行為，沒有另外
+  給 `/RU`/`/RP`）——因為 `git push` 的認證是 `gh auth git-credential`，
+  憑證在 Windows 登入 session／keyring 裡，背景無登入模式可能讀不到。
+
+**驗證結果**：部署後 `/screen/top150` 從「104/150 檔失敗、要等很久」變成
+「3 秒回應、`skipped_count: 0`」；`schtasks /Run` 手動觸發過一次排程本身
+（不是我直接跑 python），確認在真正的排程觸發情境下也能跑通整條路
+（含 git push 認證）。
+
+## 14.4 延伸：基本面摘要功能意外挖出 FinMind 的請求額度限制（不是 IP 封鎖）
+
+使用者接著要求「點股票名字可以直接看基本面資料」，體驗比照「點收盤價開
+K 線圖」（`screen_page.py` 的 `openChart()`）。基本面計算邏輯完全重用
+[公司基本面分析](../公司基本面分析/) 專案的 `tw_stock_report.report`
+（新增 `generate_summary()`，見該專案自己的 DEVELOPMENT_LOG），這裡新增
+`scripts/prefetch_fundamentals.py` 對 `TOP150_CONSTITUENTS` 每一檔跑一次
+簡化摘要（營收/EPS 趨勢文字、基本面自檢表、目標價評等，不含新聞/PDF/
+圖表），彙整成 `data/fundamentals.json` 用同一套 git 發布邏輯推上 GitHub
+（`_run_git`/`_publish_to_git` 抽成 `scripts/_git_publish.py` 給兩支
+排程腳本共用）；`api.py` 新增 `GET /fundamentals/{stock_id}`，一樣是
+「讀 GitHub raw 現成資料」模式。
+
+**意外發現：這次的 402 不是 IP 封鎖，是請求額度限制**——這次批次是在
+**家裡電腦**（住宅 IP，14.2 節已證實沒被封鎖）跑的，但對 150 檔各打 5 個
+FinMind 資料集（月營收/EPS/損益表/資產負債表/現金流量表），累積到約
+40 檔左右還是開始出現 `402 Payment Required`；调整快取時間後幾分鐘內
+重跑一次，同樣的股票這次變成 `403 Forbidden`——研判是短時間內兩次大量
+請求，讓 FinMind 從「額度用完（402）」升級成「疑似觸發反濫用機制
+（403）」。這證實 14.2 節看到的 402 至少有兩種不同成因：Render 那次是
+IP 層級整批封鎖（跟有沒有 token 無關），這次是**單純的請求量／額度
+問題**，即使是沒被封鎖的住宅 IP，短時間內對同一個資料源發太多請求一樣
+會被限制。
+
+**根因**：`公司基本面分析/tw_stock_report/config.py` 的
+`CACHE_TTL_EPS`（月營收/EPS/財報/資產負債表/現金流量表這 4 個 provider
+共用同一個常數）原本是 12 小時，這個設計是給「單檔互動查詢」調的
+（同一天內查兩次同一檔不用重打）；排程每天固定時間對 150 檔全部查一次，
+12 小時 TTL 在每天固定時間跑的排程下**等於每天都是 cache miss**，
+150 檔的資料本來就只有月/季更新頻率，完全不需要每天真的重新打一次
+FinMind。
+
+**修法**：把 `CACHE_TTL_REVENUE` 拉長到 7 天、`CACHE_TTL_EPS` 拉長到
+30 天（見公司基本面分析專案自己的 DEVELOPMENT_LOG），並把
+`prefetch_fundamentals.py` 的併發數從（原本比照 `screen_stocks()` 的）
+6 降到 2，對 FinMind 更溫和。**這是漸進式的自我修復設計，不是一次到位**：
+目前 150 檔裡約 42 檔已經有完整資料（且往後因為長 TTL 會一直保持
+新鮮），其餘約 108 檔會在之後幾天的排程裡逐漸補上——每天排程都會嘗試，
+只要某天某檔在額度用完前被處理到，就會成功並靠長 TTL 一直保留下去，
+幾天內全部 150 檔應該都會補齊。**沒有選擇立刻重跑第三次去湊齊**，避免
+在同一天內對 FinMind 發第三輪大量請求、有進一步被限制得更嚴格的風險。
+
+**對前端的影響（設計上已經考慮到）**：`screen_page.py` 的基本面自檢表
+本來就會對「資料不足」的項目顯示 `passed: null`（「？」圖示＋「資料不足，
+無法判定」文字），營收/EPS 摘要文字查無資料時顯示固定提示文字——這些
+UI 分支不是特別為了這次的額度問題新加的，是沿用 `tw_stock_report` 專案
+本身「查無資料是正常，不是程式壞掉」的既有設計哲學，剛好也扛住了這次
+額度不足造成的部分資料缺漏。
+
+## 14.5 直接篩選個股：唯一允許 Render 即時打外部資料源的例外
+
+使用者要求新增第三種篩選方式：輸入任一股票代號/名稱（不限 0050+0051 這
+150 檔池子），查單一檔的均線分級＋K線圖＋基本面。這跟前兩節的「排程預抓、
+Render 只讀現成資料」原則衝突——任一股票的範圍是全部上千檔上市櫃公司，
+不可能每天預先幫每一檔都算好。
+
+**取捨**：讓 `GET /screen/stock/{query}` 成為這個 API **唯一一個即時呼叫
+外部資料源的 endpoint**，理由：
+- 股價（`ma_screener.screen_stocks()`）有證交所官方備援，先前的診斷是
+  「請求量大時才會被擋（428）」——單一檔的請求量遠低於觸發門檻，預期
+  大部分時候能透過備援成功。
+- 股票代號/名稱本身**不需要**即時查 FinMind：新增
+  `scripts/prefetch_stock_index.py`（跟另外兩支排程腳本一樣的模式）
+  一次性抓 `TaiwanStockInfo` 全部上市櫃清單（不是逐檔查詢，成本遠低於
+  `prefetch_fundamentals.py` 那種批次查詢），推上 GitHub 當
+  `data/stock_index.json`；`api.py` 新增 `_resolve_stock()`，比對邏輯
+  抄 `tw_stock_report/identity.py::resolve()`（代號完全相符→名稱完全
+  相符→名稱包含→別名），但只在這份預抓清單裡查表，不含任何網路請求。
+- 基本面摘要（FinMind 財報，沒有官方備援、封鎖不分請求量）**做不到**
+  即時查詢；查詢到的股票如果剛好也在 150 檔池子裡，點名字看基本面會
+  正常顯示（走現成的 `/fundamentals/{stock_id}`），不在池子裡的話會走
+  既有的 404 優雅降級（「查無此股票的基本面資料」）——這是已知且無法
+  避免的限制，不是 bug，兩者都不需要額外程式碼處理。
+
+**順便修正一個既有的小架構問題**：`ma_screener.py` 頂部的模組說明文字
+（第一段）原本寫「多空訊號不一致的股票會落在 tier 0，例如站上 5MA 但跌破
+10MA」，但實際的 `_classify_tier()` 邏輯裡「站上 5MA 但跌破 10MA」會被
+`if above_5: return 1` 判成 tier 1（準備短線翻多），根本不會落到 tier 0
+——這份文件描述跟程式碼本身不一致，是撰寫這個功能之前就存在的舊
+差異（不是這次改動造成的）。實測 150 檔目前 0 檔落在 tier 0，真正會
+命中 tier 0 的只有「收盤價剛好精確等於 5MA」這種浮點數字剛好相等的
+邊角案例。這個發現不影響這次功能本身的正確性（`include_neutral_tier`
+本來就是為了「萬一查到的個股剛好落在這個邊角案例，也要顯示出來，不能
+顯示成查無資料」而加的），但值得記一筆，避免以後有人照著那段舊說明文字
+去理解 tier 0 的觸發條件。
+
+**實作**：`ma_screener.py` 補上 `TIER_LABELS[0]`/`TIER_DESCRIPTIONS[0]`
+（不動 `TIER_ORDER`，CLI 等其他呼叫端不受影響）；`screen_page.py` 補
+`_TIER_ACCENT[0]`，`render_screen_html()` 新增 `include_neutral_tier`
+參數（預設 `False`，只有 `/screen/stock/{query}` 會傳 `True`），讓單檔
+查詢時 tier 0 的股票也能出現在表格裡而不是被過濾成「查無符合條件」；
+`api.py` 新增 `_fetch_stock_index()`/`_resolve_stock()`/
+`GET /screen/stock/{query}`（查詢失敗時回 503 並附上
+`result.skipped` 的原因，不是回一個空白結果）；`篩選器APP/www/` 選單
+新增文字輸入框＋查詢按鈕，`app.js` 把「檢查 API 網址／載入中訊息／處理
+回應」抽成共用的 `runScreenRequest()`，`runScreen()`/`runStockScreen()`
+共用；PDF 功能只有均線篩選股票池才有現成檔案，直接篩選個股沒有對應
+endpoint，這裡靠 `currentUniverse` 是否為 `null` 決定要不要顯示
+`pdfBtn`，避免使用者點了卻噴 404。
+
 ## 15. 如果要繼續開發，建議先看這幾個檔案
 
 - `ma_screener.py` — 均線分級邏輯核心，加新的分級規則或新股票池大概率要碰這裡；
@@ -744,17 +882,27 @@ exchangeReport/STOCK_DAY` 回傳 **428 Client Error**（伺服器主動拒絕，
 - `etf0050_constituents.py` / `etf0051_constituents.py` — 股票池清單，每季要
   手動查核更新
 - `providers/price.py` — 股價來源（FinMind + 證交所備援），跟公司基本面分析
-  專案是分開維護的複本，修 bug 記得檢查另一邊；目前 FinMind／證交所在 Render
-  上都會被擋（見第 14.2 節，尚未解決），改這個檔案前先確認那個問題的最新狀態
+  專案是分開維護的複本，修 bug 記得檢查另一邊；FinMind／證交所在 Render 上
+  會被擋這件事已經解決（見第 14.2/14.3 節），改這個檔案前先確認排程資料還
+  是不是這兩個 provider 唯一的呼叫端（`api.py` 本身已經不再呼叫）
 - `http_client.py` — robots.txt 檢查跟共用的 GET 邏輯，第 14.1 節修過一個
   「robots.txt 讀取失敗時判斷邏輯反了」的 bug，改這裡要小心 `_robots_cache`
   的 sentinel 設計，不要又存回一個「讀取失敗」的 parser 物件
 - `screen_page.py` / `pdf_report.py` — 兩種輸出格式，改呈現內容通常要兩邊一起改；
-  `screen_page.py` 現在同時扛著表格篩選 UI 跟 Canvas 技術分析圖表兩套前端邏輯，
-  是這個專案目前 JS 最複雜的檔案，改動前建議先搞清楚 `drawPanel()` / `renderChart()`
-  / `chartRange` 縮放模型，以及第 12 節的觸控手勢意圖判斷邏輯，再動手修改
+  `screen_page.py` 現在同時扛著表格篩選 UI、Canvas 技術分析圖表、基本面摘要
+  三套前端邏輯，是這個專案目前 JS 最複雜的檔案，改動前建議先搞清楚
+  `drawPanel()` / `renderChart()` / `chartRange` 縮放模型、第 12 節的觸控
+  手勢意圖判斷邏輯，以及第 14.4 節 `openFundamentals()` 的「API base／密碼
+  由 App 殼注入、優雅降級」設計，再動手修改
 - `app_streamlit.py` — 網頁介面，PC/iPhone 開啟方式的細節、側邊欄/popover 選單
   切換邏輯、iframe 高度自動調整都在這裡
-- `api.py` — 給手機 App（見第 14 節、`../篩選器APP/`）用的 HTTP API，跟
-  `app_streamlit.py` 平行的另一個前端入口，改篩選/報告邏輯本身兩邊都要留意
-  是否需要同步驗證（不需要同步改程式碼，兩邊都是直接 import 同一套底層函式）
+- `api.py` — 給手機 App（見第 14 節、`../篩選器APP/`）用的 HTTP API，第 14.3
+  節之後改成只讀 GitHub 上排程預抓的現成資料，不再自己即時算；`app_streamlit.py`
+  仍然是即時計算的獨立入口，兩邊行為已經不同，不是單純的「平行介面」關係了。
+  唯一的例外是 `GET /screen/stock/{query}`（見第 14.5 節），這是刻意保留、
+  唯一即時打外部資料源的 endpoint，改這裡要記得這個例外的取捨理由
+- `scripts/prefetch_and_publish.py` / `scripts/prefetch_fundamentals.py` /
+  `scripts/prefetch_stock_index.py` / `scripts/_git_publish.py` — 家裡電腦
+  排程用的腳本（見第 14.3/14.4/14.5 節），`run_prefetch.bat` + Windows
+  工作排程器每天觸發；改股票池/篩選邏輯本身記得這裡也會連帶跑到最新版本，
+  不用額外同步
