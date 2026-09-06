@@ -1016,6 +1016,7 @@ def render_screen_html(
       document.getElementById('chartView').hidden = true;
       document.getElementById('tableView').hidden = false;
       currentChartStockId = null;
+      stopEdgePan();
       resizeFrame();
     }}
 
@@ -1306,6 +1307,47 @@ def render_screen_html(
     var touchStartX = 0, touchStartY = 0;
     var TOUCH_INTENT_PX = 8;
 
+    // 放大（縮放）之後，使用者常常想直接用單指往左右移動看更早/更新的
+    // 資料，但單指水平拖曳已經用來查價（見上面 touchIntent === 'chart'）。
+    // 折衷做法：查價拖曳的行為完全不變，但如果手指拖到目前可視範圍的左右
+    // 邊緣附近、且目前是縮放狀態（左右還有畫面外的資料），就用一個
+    // interval 持續把可視窗口往那個方向平移，體感跟一般清單「拖到邊緣
+    // 自動捲動」一致——手指移開邊緣、放開、或改成兩指手勢都會停止。
+    var edgePanTimer = null;
+    var edgePanDir = 0; // 0=不在邊緣、1=靠左邊緣(平移到更早)、-1=靠右邊緣(平移到更新)
+    var EDGE_PAN_ZONE_PX = 28;
+    var EDGE_PAN_STEP_DAYS = 0.5;
+    var EDGE_PAN_INTERVAL_MS = 60;
+
+    function stopEdgePan() {{
+      if (edgePanTimer) {{ clearInterval(edgePanTimer); edgePanTimer = null; }}
+      edgePanDir = 0;
+    }}
+
+    function updateEdgePan(clientX) {{
+      var state = priceChart._chartState;
+      if (!state || !currentChartStockId) {{ stopEdgePan(); return; }}
+      var hist = PRICE_HISTORY[currentChartStockId];
+      var n = hist.dates.length;
+      var span = chartRange.end - chartRange.start + 1;
+      var dir = 0;
+      if (span < n) {{
+        var rect = priceChart.getBoundingClientRect();
+        var relX = clientX - rect.left;
+        if (relX < state.padLeft + EDGE_PAN_ZONE_PX && chartRange.start > 0) {{
+          dir = 1;
+        }} else if (relX > state.padLeft + state.plotW - EDGE_PAN_ZONE_PX && chartRange.end < n - 1) {{
+          dir = -1;
+        }}
+      }}
+      if (dir === edgePanDir) return;
+      stopEdgePan();
+      edgePanDir = dir;
+      if (dir !== 0) {{
+        edgePanTimer = setInterval(function () {{ applyPan(dir * EDGE_PAN_STEP_DAYS); }}, EDGE_PAN_INTERVAL_MS);
+      }}
+    }}
+
     function updateCrosshairFromX(clientX) {{
       var idx = idxFromClientX(clientX);
       if (idx !== null) renderChart(currentChartStockId, idx);
@@ -1350,6 +1392,7 @@ def render_screen_html(
             midX: (ev.touches[0].clientX + ev.touches[1].clientX) / 2,
           }};
           touchIntent = null;
+          stopEdgePan();
         }} else if (ev.touches.length === 1) {{
           touchIntent = null;
           touchStartX = ev.touches[0].clientX;
@@ -1390,10 +1433,14 @@ def render_screen_html(
             return; // 移動還太小，先不判斷方向、也先不畫，避免手抖誤觸
           }}
           touchIntent = Math.abs(dx) > Math.abs(dy) ? 'chart' : 'scroll';
-          if (touchIntent === 'scroll') return;
+          if (touchIntent === 'scroll') {{
+            stopEdgePan();
+            return;
+          }}
         }}
         // 走到這裡代表 touchIntent === 'chart'（水平拖曳查價）。
         updateCrosshairFromX(t.clientX);
+        updateEdgePan(t.clientX);
         ev.preventDefault();
       }}, {{ passive: false }});
       canvas.addEventListener('touchend', function (ev) {{
@@ -1404,6 +1451,7 @@ def render_screen_html(
           updateCrosshairFromX(touchStartX);
         }}
         touchIntent = null;
+        stopEdgePan();
       }});
     }});
 
