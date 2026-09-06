@@ -1024,6 +1024,46 @@ placeholder 換成假值）、丟給 `node --check` 驗證語法」的方式確�
 `EDGE_PAN_ZONE_PX`／`EDGE_PAN_STEP_DAYS`／`EDGE_PAN_INTERVAL_MS` 這三個
 常數即可，不需要動判斷邏輯本身。
 
+## 14.10 `run_prefetch.bat` 排程改順序：`prefetch_stock_index.py` 這次失敗不是新的 IP 封鎖，是額度被前一支腳本用光
+
+第 14.9 節那次改動（K 線圖手勢）之後，手動重跑一次 `run_prefetch.bat`
+確認新程式碼有反映到 0050/top150，結果 `prefetch_stock_index.py`（股票
+代號/名稱索引，「直接篩選個股」查詢用）失敗，錯誤是 FinMind 對
+`TaiwanStockInfo` 資料集回傳 402 Payment Required。第一時間懷疑是不是
+FinMind 現在連家裡住宅 IP 都開始封鎖（跟第 14.2 節 Render 雲端 IP 被封鎖
+是不是同一件事在擴大），追查後確認**不是**，是另一件事。
+
+**真正的根因**：這台電腦（跑排程的家裡電腦）**沒有設定 `FINMIND_TOKEN`
+環境變數**，所有 FinMind 呼叫都是匿名額度。`run_prefetch.bat` 原本的
+執行順序是 `prefetch_and_publish.py` → `prefetch_fundamentals.py` →
+`prefetch_stock_index.py`。`prefetch_fundamentals.py` 一次要對 0050+
+top150（約 150 檔）各打 4-5 個 FinMind 資料集（月營收/財報/資產負債表/
+現金流量表），這件事「公司基本面分析」專案自己的 `tw_stock_report/config.py`
+註解裡早就寫明：「實測跑到約 40 檔之後開始出現 402 Payment Required」，
+匿名額度會在這支腳本執行到一半就用完，是已知、已經接受的現象。問題出在
+`prefetch_stock_index.py` 排在**最後面**，只需要對 `TaiwanStockInfo` 打
+**一次** API，但輪到它執行的時候，前面 `prefetch_fundamentals.py` 已經
+把這個 IP 的匿名額度用光了，所以這唯一一次呼叫也跟著收到 402——而且它
+沒有像 `prefetch_fundamentals.py` 那樣「單檔失敗就跳過、繼續下一檔」的
+容錯設計（它是一次性抓全部清單，不是逐檔查詢），一失敗就直接整支腳本
+`return 1`。當晚的 log 也印證這個推論：`prefetch_and_publish.py`（主要
+走證交所備援，幾乎不需要 FinMind）完全沒有錯誤，FinMind 402 全部是從
+`prefetch_fundamentals.py` 開始才出現。
+
+**修法**：調整 `run_prefetch.bat` 的執行順序，把 `prefetch_stock_index.py`
+排到**最前面**（`prefetch_and_publish.py`、`prefetch_fundamentals.py`
+維持原順序排在後面）——量小、只需要一次呼叫的腳本先搶到額度，量大、
+本來就預期會把額度用完的 `prefetch_fundamentals.py` 排最後，不影響它
+自己的既有行為（它本來就有心理準備會失敗一部分）。純粹是排序問題，
+沒有改任何一支腳本內部的邏輯。
+
+**教訓**：好幾支排程腳本共用同一份有限額度（這裡是 FinMind 匿名配額）
+時，**执行順序本身就是一種資源分配決策**——量小的呼叫排在量大的呼叫
+後面，會被動繼承前面用剩多少算多少的下場，跟該呼叫本身穩不穩定無關。
+之後如果再新增共用同一個外部額度的排程腳本，開頭記得先想一次「這幾支
+的呼叫量誰大誰小、有沒有辦法讓量小的先執行」，不要預設用檔案原本的
+撰寫順序。
+
 ## 15. 如果要繼續開發，建議先看這幾個檔案
 
 - `ma_screener.py` — 均線分級邏輯核心，加新的分級規則或新股票池大概率要碰這裡；
